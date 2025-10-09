@@ -47,32 +47,32 @@ See [S-CORE-website](https://eclipse-score.github.io/) and [documentation](https
 
 | Repository | Description | Status |
 |------------|-------------|--------|
-| [bazel-tools-python](https://github.com/eclipse-score/bazel-tools-python) | Repository for python static code checker | ✅ active |
-| [bazel-tools-cc](https://github.com/eclipse-score/bazel-tools-cc) | Repository for clang-tidy based static code checker | ✅ active |
-| [inc_config_management](https://github.com/eclipse-score/inc_config_management) | Incubation repository for config management | ✅ active |
+| [bazel-tools-python](https://github.com/eclipse-score/bazel-tools-python) | Repository for python static code checker | 🕓 stale |
+| [bazel-tools-cc](https://github.com/eclipse-score/bazel-tools-cc) | Repository for clang-tidy based static code checker | 🕓 stale |
+| [inc_config_management](https://github.com/eclipse-score/inc_config_management) | Incubation repository for config management | 🕓 stale |
 | [inc_daal](https://github.com/eclipse-score/inc_daal) | Incubation repository for DAAL module | ✅ active |
 | [inc_feo](https://github.com/eclipse-score/inc_feo) | Incubation repository for the fixed execution order framework | ✅ active |
-| [inc_json](https://github.com/eclipse-score/inc_json) | Incubation repository for JSON module | ✅ active |
-| [inc_mw_com](https://github.com/eclipse-score/inc_mw_com) | Incubation repository for interprocess communication framework | ✅ active |
+| [inc_json](https://github.com/eclipse-score/inc_json) | Incubation repository for JSON module | 🕓 stale |
+| [inc_mw_com](https://github.com/eclipse-score/inc_mw_com) | Incubation repository for interprocess communication framework | 🕓 stale |
 | [inc_mw_log](https://github.com/eclipse-score/inc_mw_log) | Incubation repository for logging framework | 🕓 stale |
 | [inc_mw_per](https://github.com/eclipse-score/inc_mw_per) | Incubation repository for persistency framework | ✅ active |
-| [inc_nlohmann_json](https://github.com/eclipse-score/inc_nlohmann_json) | Nlohmann JSON Library | ✅ active |
+| [inc_nlohmann_json](https://github.com/eclipse-score/inc_nlohmann_json) | Nlohmann JSON Library | 🕓 stale |
 | [inc_orchestrator](https://github.com/eclipse-score/inc_orchestrator) | Incubation repo for orchestration | ✅ active |
 | [inc_os_autosd](https://github.com/eclipse-score/inc_os_autosd) | Incubation repository for AutoSD Development Platform | ✅ active |
 | [inc_process_test_management](https://github.com/eclipse-score/inc_process_test_management) | Incubation repository for Process - Sphinx-Test management | 🕓 stale |
-| [inc_process_variant_management](https://github.com/eclipse-score/inc_process_variant_management) | Incubation repository for Process - Sphinx-Variant management | ✅ active |
-| [testing_tools](https://github.com/eclipse-score/testing_tools) | Repository for testing utilities | 🕓 stale |
-| [inc_lifecycle](https://github.com/eclipse-score/inc_lifecycle) | Incubation repository for lifecycle feature | ✅ active |) | Incubation repository for lifecycle framework | ✅ active |
+| [inc_process_variant_management](https://github.com/eclipse-score/inc_process_variant_management) | Incubation repository for Process - Sphinx-Variant management | 🕓 stale |
+| [testing_tools](https://github.com/eclipse-score/testing_tools) | Repository for testing utilities | ✅ active |
+| [inc_lifecycle](https://github.com/eclipse-score/inc_lifecycle) | Incubation repository for the lifecycle feature | ✅ active |
 
 ### Infrastructure / Toolchains
 
 | Repository | Description | Status |
 |------------|-------------|--------|
-| [bazel_platforms](https://github.com/eclipse-score/bazel_platforms) | Bazel platform definitions used by S-CORE modules | 🕓 stale |
-| [toolchains_gcc](https://github.com/eclipse-score/toolchains_gcc) | Bazel toolchains for GNU GCC | 🕓 stale |
+| [bazel_platforms](https://github.com/eclipse-score/bazel_platforms) | Bazel platform definitions used by S-CORE modules | ✅ active |
+| [toolchains_gcc](https://github.com/eclipse-score/toolchains_gcc) | Bazel toolchains for GNU GCC | ✅ active |
 | [toolchains_gcc_packages](https://github.com/eclipse-score/toolchains_gcc_packages) | Bazel toolchains for GNU GCC | ✅ active |
-| [toolchains_qnx](https://github.com/eclipse-score/toolchains_qnx) | Bazel toolchains for QNX | 🕓 stale |
-| [toolchains_rust](https://github.com/eclipse-score/toolchains_rust) | Rust toolchains | 🕓 stale |
+| [toolchains_qnx](https://github.com/eclipse-score/toolchains_qnx) | Bazel toolchains for QNX | ✅ active |
+| [toolchains_rust](https://github.com/eclipse-score/toolchains_rust) | Rust toolchains | ✅ active |
 
 ### Infrastructure / Tooling
 
