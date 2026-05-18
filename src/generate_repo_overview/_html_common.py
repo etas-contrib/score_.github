@@ -81,9 +81,15 @@ def version_badge(
     version: str | None,
     max_bazel: tuple[int, ...] | None,
     *,
-    latest_dac: str | None,
+    latest_dep_version: str | None,
     is_bazel: bool,
 ) -> str:
+    """Render a colored version badge span.
+
+    Bazel versions are green when equal to *max_bazel*, red otherwise.
+    Dep versions compare against *latest_dep_version*: green if equal,
+    yellow if same major.minor, red if older, muted if unknown.
+    """
     if version is None or not version.strip():
         return '<span class="badge muted">—</span>'
 
@@ -95,9 +101,9 @@ def version_badge(
             return f'<span class="badge green">{e(cleaned)}</span>'
         return f'<span class="badge red">{e(cleaned)}</span>'
 
-    if latest_dac is None:
+    if latest_dep_version is None:
         return f'<span class="badge muted">{e(cleaned)}</span>'
-    latest_cleaned = latest_dac.strip()
+    latest_cleaned = latest_dep_version.strip()
     if cleaned == latest_cleaned:
         return f'<span class="badge green">{e(cleaned)}</span>'
     if parsed is not None:

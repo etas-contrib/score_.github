@@ -8,6 +8,7 @@ from generate_repo_overview.models import (
     RepoEntry,
     RepoSnapshot,
     TraceabilityTypeMetrics,
+    TrackedDep,
     VolatileMetricsSnapshot,
 )
 
@@ -111,11 +112,35 @@ def test_render_details_writes_repo_detail_pages(tmp_path: Path) -> None:
     assert "<!DOCTYPE html>" in detail_content
 
 
+def test_render_detail_page_shows_tracked_dep_versions(tmp_path: Path) -> None:
+    snapshot_path = tmp_path / "repo_overview.json"
+    output_dir = tmp_path / "_site"
+    write_snapshot(_make_snapshot_with_dac(), snapshot_path)
+
+    cli.main(
+        [
+            "render-details",
+            "--input",
+            str(snapshot_path),
+            "--output",
+            str(output_dir),
+        ]
+    )
+
+    detail = output_dir / "my-dac-repo" / "index.html"
+    assert detail.exists()
+    detail_content = detail.read_text(encoding="utf-8")
+    assert "Docs As Code Version" in detail_content
+
+
 def _make_snapshot_with_dac() -> RepoSnapshot:
     return RepoSnapshot(
         schema_version=SNAPSHOT_SCHEMA_VERSION,
         org_name="eclipse-score",
         generated_at="2026-04-13T12:00:00+00:00",
+        tracked_deps=(
+            TrackedDep(repo="eclipse-score/docs-as-code", module_name="score_docs_as_code"),
+        ),
         repos=(
             RepoEntry(
                 name="my-dac-repo",
@@ -123,7 +148,7 @@ def _make_snapshot_with_dac() -> RepoSnapshot:
                 category="Components",
                 subcategory="General",
                 content=DeepContentSignals(
-                    docs_as_code_version="4.0.1",
+                    bazel_deps=(("score_docs_as_code", "4.0.1"),),
                 ),
                 traceability=(
                     TraceabilityTypeMetrics(

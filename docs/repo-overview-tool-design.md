@@ -11,15 +11,17 @@
 
 The tool is split into three layers:
 
-1. `collector/`
+1. `org_config.py`
+   - Loads organization-specific settings from `org_config.toml`: org name, repo include patterns, tracked Bazel deps, workflow signals, reference integration repo, and registry repo.
+2. `collector/`
    - Connects to GitHub.
    - Loads active repositories and custom properties.
-   - Derives content-based signals such as `has_ci`, `has_lint_config`, `has_coverage_config`, `bazel_version`, and `referenced_by_reference_integration`.
+   - Derives content-based signals such as `has_ci`, `has_lint_config`, `has_coverage_config`, `bazel_version`, `matched_workflow_signals`, `bazel_deps`, and `referenced_by_reference_integration`.
    - Writes and reads a local JSON snapshot cache.
-2. `profile_readme.py`, `metrics_report.py`, `metrics_html.py` (with `_html_index.py`, `_html_detail.py`, `_html_common.py`)
+3. `profile_readme.py`, `metrics_report.py`, `metrics_html.py` (with `_html_index.py`, `_html_detail.py`, `_html_common.py`)
    - Render different views (Markdown and HTML) from the same normalized data model.
    - Keep presentation decisions out of the collection layer.
-3. `cli.py`
+4. `cli.py`
    - Orchestrates cache-aware commands: `collect`, `render-overview`, and `render-details`.
 
 ## Data Model
@@ -32,6 +34,8 @@ The shared model lives in `models.py`.
   - organization name
   - generation timestamp
   - normalized repositories
+  - tracked Bazel dependency definitions (`tracked_deps`)
+  - workflow signal labels (`workflow_signal_labels`)
 
 The snapshot is intentionally renderer-agnostic. It stores neutral values such as booleans and plain strings rather than Markdown-specific markers.
 
@@ -78,8 +82,9 @@ uv run generate-repo-overview <command>
 
 Built-in commands:
 
-- `collect`
+- `collect --org-config org_config.toml`
   - Sync the cached snapshot from GitHub and write it to disk.
+  - Requires `--org-config` pointing to a TOML file with organization-specific settings.
   - Use `--deep` to force a full refresh for every repository instead of reusing cached signals for unchanged ones.
 - `render-overview`
   - Render the profile README from an existing snapshot.

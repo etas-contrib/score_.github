@@ -2,21 +2,23 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
+
+if TYPE_CHECKING:
+    from generate_repo_overview.models import WorkflowSignal
 
 
 class DeepContentPayload(TypedDict):
     is_bazel_repo: bool
     bazel_version: str | None
     codeowners: tuple[str, ...]
-    docs_as_code_version: str | None
     referenced_by_reference_integration: bool
     has_gitlint_config: bool
     has_pyproject_toml: bool
     has_pre_commit_config: bool
     has_lint_config: bool
     has_ci: bool
-    uses_cicd_daily_workflow: bool
+    matched_workflow_signals: tuple[str, ...]
     has_coverage_config: bool
     top_languages: tuple[str, ...]
     bazel_deps: tuple[tuple[str, str], ...]
@@ -41,10 +43,6 @@ BAZEL_REPO_MARKER_PATHS = (
 CODEOWNERS_PATH = ".github/CODEOWNERS"
 WORKFLOW_PATH_PREFIX = ".github/workflows/"
 WORKFLOW_FILE_SUFFIXES = (".yml", ".yaml")
-DAILY_WORKFLOW_REFERENCE = "cicd-workflows/.github/workflows/daily.yml@"
-BAZEL_DEP_PATTERN_TEMPLATE = (
-    r'\bbazel_dep\s*\(\s*name\s*=\s*"{module_name}"(?P<body>.*?)\)'
-)
 VERSION_PATTERN = re.compile(r'\bversion\s*=\s*"(?P<version>[^"]+)"')
 
 
@@ -52,8 +50,8 @@ def inspect_repository_content_slow(
     repository: Any,
     *,
     ref: str | None,
+    workflow_signals: tuple[WorkflowSignal, ...] = (),
 ) -> DeepContentPayload:
-    """Run slow deep content inspection using repository tree and file reads."""
     tree_paths = fetch_repository_tree_paths(repository, ref=ref)
     if not tree_paths:
         return default_content_signals()
@@ -69,12 +67,6 @@ def inspect_repository_content_slow(
             repository,
             tree_paths=tree_paths,
             ref=ref,
-        ),
-        "docs_as_code_version": detect_dependency_version(
-            repository,
-            tree_paths=tree_paths,
-            ref=ref,
-            module_name="score_docs_as_code",
         ),
         "bazel_deps": detect_all_bazel_deps(
             repository,
@@ -95,10 +87,11 @@ def inspect_repository_content_slow(
             tree_contains_path(tree_paths, path) for path in LINT_CONFIG_PATHS
         ),
         "has_ci": any(tree_contains_path(tree_paths, path) for path in CI_PATHS),
-        "uses_cicd_daily_workflow": uses_cicd_daily_workflow(
+        "matched_workflow_signals": detect_matched_workflow_signals(
             repository,
             tree_paths=tree_paths,
             ref=ref,
+            workflow_signals=workflow_signals,
         ),
         "has_coverage_config": any(
             tree_contains_path(tree_paths, path) for path in COVERAGE_PATHS
@@ -112,7 +105,6 @@ def default_content_signals() -> DeepContentPayload:
         "is_bazel_repo": False,
         "bazel_version": None,
         "codeowners": (),
-        "docs_as_code_version": None,
         "bazel_deps": (),
         "referenced_by_reference_integration": False,
         "has_gitlint_config": False,
@@ -120,7 +112,7 @@ def default_content_signals() -> DeepContentPayload:
         "has_pre_commit_config": False,
         "has_lint_config": False,
         "has_ci": False,
-        "uses_cicd_daily_workflow": False,
+        "matched_workflow_signals": (),
         "has_coverage_config": False,
         "top_languages": (),
     }
@@ -186,24 +178,6 @@ def detect_is_bazel_repo(tree_paths: set[str]) -> bool:
         tree_contains_path(tree_paths, candidate)
         for candidate in BAZEL_REPO_MARKER_PATHS
     )
-
-
-def detect_dependency_version(
-    repository: Any,
-    *,
-    tree_paths: set[str],
-    ref: str | None,
-    module_name: str,
-) -> str | None:
-    for candidate in MODULE_PATHS:
-        if not tree_contains_path(tree_paths, candidate):
-            continue
-        content = fetch_text_file(repository, candidate, ref=ref)
-        version = get_bazel_dep_version(content, module_name=module_name)
-        if version:
-            return version
-
-    return None
 
 
 def detect_all_bazel_deps(
@@ -275,33 +249,12 @@ def codeowners_pattern_matches(pattern: str, *, target_path: str) -> bool:
         )
 
     if "/" not in normalized_pattern:
-        # Bare patterns can match either the basename or the full path, mirroring CODEOWNERS behavior.
         return fnmatch.fnmatch(
             normalized_target_path.rsplit("/", maxsplit=1)[-1],
             normalized_pattern,
         ) or fnmatch.fnmatch(normalized_target_path, normalized_pattern)
 
     return fnmatch.fnmatch(normalized_target_path, normalized_pattern)
-
-
-def get_bazel_dep_version(text: str | None, *, module_name: str) -> str | None:
-    if not text:
-        return None
-
-    pattern = re.compile(
-        BAZEL_DEP_PATTERN_TEMPLATE.format(module_name=re.escape(module_name)),
-        re.DOTALL,
-    )
-    match = pattern.search(text)
-    if match is None:
-        return None
-
-    version_match = VERSION_PATTERN.search(match.group("body"))
-    if version_match is None:
-        return None
-
-    version = version_match.group("version").strip()
-    return version or None
 
 
 def get_all_bazel_dep_versions(text: str | None) -> tuple[tuple[str, str], ...]:
@@ -328,12 +281,18 @@ def get_all_bazel_dep_versions(text: str | None) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(result, key=lambda x: x[0]))
 
 
-def uses_cicd_daily_workflow(
+def detect_matched_workflow_signals(
     repository: Any,
     *,
     tree_paths: set[str],
     ref: str | None,
-) -> bool:
+    workflow_signals: tuple[WorkflowSignal, ...] = (),
+) -> tuple[str, ...]:
+    """Return labels of workflow signals whose reference string appears in any workflow file."""
+    if not workflow_signals:
+        return ()
+
+    workflow_contents: list[str] = []
     workflow_paths = sorted(
         path
         for path in tree_paths
@@ -342,11 +301,17 @@ def uses_cicd_daily_workflow(
     )
     for workflow_path in workflow_paths:
         content = fetch_text_file(repository, workflow_path, ref=ref)
-        if content is None:
-            continue
-        if DAILY_WORKFLOW_REFERENCE in content:
-            return True
-    return False
+        if content is not None:
+            workflow_contents.append(content)
+
+    if not workflow_contents:
+        return ()
+
+    matched: list[str] = []
+    for signal in workflow_signals:
+        if any(signal.reference in content for content in workflow_contents):
+            matched.append(signal.label)
+    return tuple(matched)
 
 
 def fetch_text_file(repository: Any, path: str, *, ref: str | None) -> str | None:

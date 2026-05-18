@@ -38,8 +38,10 @@ This document explains the package structure and cache behavior. It intentionall
   - Renders the main HTML metrics dashboard (tabs, filters, sortable columns).
 - `_html_detail.py`
   - Renders per-repository HTML detail pages.
+- `org_config.py`
+  - Loads `org_config.toml`: org name, repo include patterns, tracked Bazel deps, workflow signals.
 - `constants.py`
-  - Centralizes default org, cache, and output paths.
+  - Centralizes default cache and output paths.
 - `console.py`
   - Keeps status output formatting in one place.
 
@@ -70,6 +72,8 @@ That file stores a serialized `RepoSnapshot` containing:
 - organization name
 - generation timestamp
 - all normalized repositories
+- tracked Bazel dependency definitions (`tracked_deps`)
+- workflow signal labels (`workflow_signal_labels`)
 
 The cache loader only accepts the current schema version. If the snapshot schema does not match, the cache is treated as unusable and collection falls back to a fresh GitHub fetch.
 
@@ -106,14 +110,13 @@ For each repository, the snapshot currently stores:
   - `is_bazel_repo`
   - `bazel_version`
   - `codeowners`
-  - `docs_as_code_version`
   - `referenced_by_reference_integration`
   - `has_lint_config`
   - `has_gitlint_config`
   - `has_pyproject_toml`
   - `has_pre_commit_config`
   - `has_ci`
-  - `uses_cicd_daily_workflow`
+  - `matched_workflow_signals`
   - `has_coverage_config`
   - `top_languages`
   - `bazel_deps`

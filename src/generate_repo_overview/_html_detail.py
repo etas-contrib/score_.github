@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ._html_common import BAZEL_ICON, CSS, GITHUB_ICON, e, language_badge, version_badge
+from .metrics_report import tracked_dep_label
 
 if TYPE_CHECKING:
     from .models import RepoEntry, RepoSnapshot
@@ -10,11 +11,11 @@ if TYPE_CHECKING:
 
 def render_detail_page(
     entry: RepoEntry,
-    org_name: str,
     snapshot: RepoSnapshot,
     max_bazel: tuple[int, ...] | None,
-    latest_dac: str | None,
+    latest_dep_versions: dict[str, str | None],
 ) -> str:
+    org_name = snapshot.org_name
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n<head>\n'
@@ -27,9 +28,9 @@ def render_detail_page(
         + _render_stat_grid(entry)
         + _render_release_section(entry)
         + _render_dep_diff_section(entry)
-        + _render_tooling_section(entry)
+        + _render_tooling_section(entry, snapshot)
         + _render_ownership_section(entry)
-        + _render_versions_section(entry, max_bazel, latest_dac)
+        + _render_versions_section(entry, snapshot, max_bazel, latest_dep_versions)
         + _render_footer(snapshot)
         + "</body>\n</html>\n"
     )
@@ -231,18 +232,21 @@ def _dep_status_badge(status: str, css_class: str) -> str:
     return f'<span class="badge {css_class}">{e(status)}</span>'
 
 
-def _render_tooling_section(entry: RepoEntry) -> str:
+def _render_tooling_section(entry: RepoEntry, snapshot: RepoSnapshot) -> str:
     c = entry.content
-    signals = [
+    signals: list[tuple[bool, str]] = [
         (c.has_ci, "GitHub Actions (CI)"),
-        (c.uses_cicd_daily_workflow, "Daily Workflow"),
+    ]
+    for label in snapshot.workflow_signal_labels:
+        signals.append((label in c.matched_workflow_signals, label))
+    signals.extend([
         (c.has_lint_config, "Lint Config"),
         (c.has_gitlint_config, "Gitlint"),
         (c.has_pre_commit_config, "Pre-commit"),
         (c.has_pyproject_toml, "pyproject.toml"),
         (c.has_coverage_config, "Coverage Config"),
         (c.is_bazel_repo, "Bazel Repo"),
-    ]
+    ])
 
     items = "\n".join(
         f'    <div class="signal-item">'
@@ -288,26 +292,31 @@ def _render_ownership_section(entry: RepoEntry) -> str:
 
 def _render_versions_section(
     entry: RepoEntry,
+    snapshot: RepoSnapshot,
     max_bazel: tuple[int, ...] | None,
-    latest_dac: str | None,
+    latest_dep_versions: dict[str, str | None],
 ) -> str:
+    from .models import lookup_bazel_dep_version
+
     items: list[str] = []
 
     bazel_badge = version_badge(
-        entry.content.bazel_version, max_bazel, latest_dac=None, is_bazel=True
+        entry.content.bazel_version, max_bazel, latest_dep_version=None, is_bazel=True
     )
     items.append(
         f'<div class="info-item">'
         f'<div class="info-label">Bazel Version</div>{bazel_badge}</div>'
     )
 
-    dac_badge = version_badge(
-        entry.content.docs_as_code_version, None, latest_dac=latest_dac, is_bazel=False
-    )
-    items.append(
-        f'<div class="info-item">'
-        f'<div class="info-label">Docs-As-Code Version</div>{dac_badge}</div>'
-    )
+    for dep in snapshot.tracked_deps:
+        dep_label = tracked_dep_label(dep)
+        dep_ver = lookup_bazel_dep_version(entry.content.bazel_deps, dep.module_name)
+        latest_ver = latest_dep_versions.get(dep.module_name)
+        badge = version_badge(dep_ver, None, latest_dep_version=latest_ver, is_bazel=False)
+        items.append(
+            f'<div class="info-item">'
+            f'<div class="info-label">{e(dep_label)} Version</div>{badge}</div>'
+        )
 
     refint = (
         '<span class="badge green">yes</span>'

@@ -28,7 +28,7 @@ uv run generate-repo-overview render-details
 For a fresh GitHub pull before rendering, run:
 
 ```sh
-uv run generate-repo-overview collect
+uv run generate-repo-overview collect --org-config org_config.toml
 ```
 
 By default, `collect` now does a cache-aware refresh: it checks fast, high-level

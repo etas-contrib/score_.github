@@ -10,11 +10,11 @@ from .console import print_status
 from .constants import (
     DEFAULT_CACHE,
     DEFAULT_METRICS_HTML_OUTPUT,
-    DEFAULT_ORG,
     DEFAULT_OUTPUT,
     DEFAULT_TOKEN_ENV,
 )
 from .metrics_html import render_all_pages
+from .org_config import load_org_config
 from .profile_readme import load_config, load_template, render_readme
 
 if TYPE_CHECKING:
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 CLI_EPILOG = dedent(
     f"""\
     Quick start:
-      uv run generate-repo-overview collect
+      uv run generate-repo-overview collect --org-config org_config.toml
           Sync the cached snapshot from GitHub.
 
       uv run generate-repo-overview render-overview
@@ -63,7 +63,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Collect and write the cached repository snapshot.",
     )
     collect_parser.add_argument(
-        "--org", default=DEFAULT_ORG, help="GitHub organization name"
+        "--org-config",
+        type=Path,
+        required=True,
+        help="Path to an org_config.toml file with organization-specific settings",
     )
     collect_parser.add_argument(
         "--cache", type=Path, default=DEFAULT_CACHE, help="JSON snapshot cache file"
@@ -145,8 +148,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def run_collect(args: argparse.Namespace) -> int:
+    try:
+        config = load_org_config(args.org_config)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     collect_snapshot(
-        org_name=args.org,
+        config=config,
         token_env=args.token_env,
         cache_path=args.cache,
         reuse_unchanged_repositories=not args.deep,

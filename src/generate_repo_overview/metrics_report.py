@@ -8,7 +8,7 @@ from ._text_utils import escape_markdown_table_cell
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from .models import RepoEntry, RepoSnapshot
+    from .models import RepoEntry, RepoSnapshot, TrackedDep
 
 
 HANDLE_PATTERN = re.compile(r"@[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?")
@@ -32,8 +32,8 @@ def render_metrics_report(snapshot: RepoSnapshot) -> str:
         "",
     ]
     lines.extend(render_overview_section(repos, org_name=snapshot.org_name))
-    lines.extend(render_versions_section(repos, org_name=snapshot.org_name))
-    lines.extend(render_automation_section(repos, org_name=snapshot.org_name))
+    lines.extend(render_versions_section(repos, snapshot=snapshot))
+    lines.extend(render_automation_section(repos, snapshot=snapshot))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -41,7 +41,7 @@ def render_summary(repos: list[RepoEntry]) -> list[str]:
     return [
         f"- Repositories: {len(repos)}",
         f"- With GitHub Actions: {sum(repo.content.has_ci for repo in repos)}",
-        f"- Using daily workflow: {sum(repo.content.uses_cicd_daily_workflow for repo in repos)}",
+        f"- With workflow signals: {sum(bool(repo.content.matched_workflow_signals) for repo in repos)}",
         f"- With lint/style config: {sum(repo.content.has_lint_config for repo in repos)}",
         f"- With coverage config: {sum(repo.content.has_coverage_config for repo in repos)}",
         f"- With releases: {sum(has_latest_release(repo) for repo in repos)}",
@@ -74,41 +74,99 @@ def render_overview_section(repos: list[RepoEntry], org_name: str) -> list[str]:
     return lines
 
 
-def render_versions_section(repos: list[RepoEntry], org_name: str) -> list[str]:
-    latest_docs_as_code_release = get_latest_docs_as_code_release(repos)
+def render_versions_section(repos: list[RepoEntry], *, snapshot: RepoSnapshot) -> list[str]:
+    """Render the Versions table with one column per tracked dep plus Bazel and Ref-Int."""
+    from .models import lookup_bazel_dep_version
+
+    tracked_deps = snapshot.tracked_deps
     max_bazel_version = get_max_bazel_version(repos)
+    latest_dep_versions = {
+        dep.module_name: get_latest_tracked_dep_version(repos, dep)
+        for dep in tracked_deps
+    }
+
+    dep_labels = [tracked_dep_label(dep) for dep in tracked_deps]
 
     def render_row(entry: RepoEntry, *, org_name: str) -> str:
-        return render_versions_row(
-            entry,
-            org_name=org_name,
-            max_bazel_version=max_bazel_version,
-            latest_docs_as_code_release=latest_docs_as_code_release,
+        url = f"https://github.com/{org_name}/{entry.name}"
+        bazel_cell = render_bazel_version_status(entry.content.bazel_version, max_bazel_version)
+        dep_cells = " | ".join(
+            render_dep_version_status(
+                lookup_bazel_dep_version(entry.content.bazel_deps, dep.module_name),
+                latest_dep_versions.get(dep.module_name),
+            )
+            for dep in tracked_deps
         )
+        refint = render_bool(entry.content.referenced_by_reference_integration)
+        parts = f"| [{entry.name}]({url}) | {bazel_cell} |"
+        if dep_cells:
+            parts += f" {dep_cells} |"
+        return f"{parts} {refint} |"
+
+    dep_headers = " | ".join(f"{label} Version" for label in dep_labels)
+    dep_dividers = " | ".join("---" for _ in dep_labels)
+    header = f"| Repository | {render_bazel_version_column_header()} |"
+    divider = "|------------|---------------|"
+    if dep_headers:
+        header += f" {dep_headers} |"
+        divider += f" {dep_dividers} |"
+    header += " Reference Integration |"
+    divider += " ----------------------|"
 
     lines = [
         "## Versions",
         "",
         "- Generic view of repository version signals.",
-        '- `Docs-As-Code Version`: `version = "..."` for `bazel_dep(name = "score_docs_as_code", ...)` in the repository root `MODULE.bazel`.',
-        "- `Reference Integration`: `yes` when the repository is a direct `bazel_dep(...)` in `reference_integration`'s root `MODULE.bazel` or included module files.",
+        "- `Reference Integration`: `yes` when the repository is a direct `bazel_dep(...)` in the reference integration's root `MODULE.bazel` or included module files.",
         "- `Bazel Version`: highest version in the table is `🟢`; every other value is `🔴`.",
-        "- `Docs-As-Code Version`: `⚪` if missing, `🟢` if equal to latest docs-as-code release, `🟡` if same major.minor, else `🔴`.",
-        "",
     ]
+    for label in dep_labels:
+        lines.append(
+            f"- `{label} Version`: `⚪` if missing, `🟢` if equal to latest release, `🟡` if same major.minor, else `🔴`."
+        )
+    lines.append("")
     lines.extend(
         render_category_tables(
             repos,
-            org_name=org_name,
-            header=f"| Repository | {render_bazel_version_column_header()} | Docs-As-Code Version | Reference Integration |",
-            divider="|------------|---------------|----------------------|-----------------------|",
+            org_name=snapshot.org_name,
+            header=header,
+            divider=divider,
             row_renderer=render_row,
         )
     )
     return lines
 
 
-def render_automation_section(repos: list[RepoEntry], org_name: str) -> list[str]:
+def render_automation_section(repos: list[RepoEntry], *, snapshot: RepoSnapshot) -> list[str]:
+    """Render the Automation table with one column per workflow signal."""
+    signal_labels = snapshot.workflow_signal_labels
+
+    def render_row(entry: RepoEntry, *, org_name: str) -> str:
+        url = f"https://github.com/{org_name}/{entry.name}"
+        signal_cells = " | ".join(
+            render_bool(label in entry.content.matched_workflow_signals)
+            for label in signal_labels
+        )
+        parts = (
+            f"| [{entry.name}]({url}) | {render_presence(entry.content.has_gitlint_config, icon='🔍')} | "
+            f"{render_presence(entry.content.has_pyproject_toml, icon='🐍')} | "
+            f"{render_presence(entry.content.has_pre_commit_config, icon='🪝')} | "
+            f"{render_presence(entry.content.has_ci, icon='⚙')} |"
+        )
+        if signal_cells:
+            parts += f" {signal_cells} |"
+        return f"{parts} {render_bool(entry.content.has_coverage_config)} |"
+
+    signal_headers = " | ".join(signal_labels)
+    signal_dividers = " | ".join("---" for _ in signal_labels)
+    header = "| Repository | 🔍 Gitlint | 🐍 Pyproject | 🪝 Pre-commit | ⚙ GitHub Actions |"
+    divider = "|------------|------------|-------------|---------------|------------------|"
+    if signal_headers:
+        header += f" {signal_headers} |"
+        divider += f" {signal_dividers} |"
+    header += " Coverage Config |"
+    divider += " ---------------|"
+
     lines = [
         "## Delivery And Automation",
         "",
@@ -116,17 +174,20 @@ def render_automation_section(repos: list[RepoEntry], org_name: str) -> list[str
         "- `🐍 Pyproject`: shown when `pyproject.toml` exists.",
         "- `🪝 Pre-commit`: shown when `.pre-commit-config.yaml` exists.",
         "- `⚙ GitHub Actions`: shown when `.github/workflows` exists.",
-        "- `Daily Workflow`: `yes` if any workflow file references `cicd-workflows/.github/workflows/daily.yml@...`.",
+    ]
+    for label in signal_labels:
+        lines.append(f"- `{label}`: `yes` if a matching workflow reference is detected.")
+    lines.extend([
         "- `Coverage Config`: `yes` if `coverage.yml`, `coverage.xml`, `pytest.ini`, or `.coveragerc` exists.",
         "",
-    ]
+    ])
     lines.extend(
         render_category_tables(
             repos,
-            org_name=org_name,
-            header="| Repository | 🔍 Gitlint | 🐍 Pyproject | 🪝 Pre-commit | ⚙ GitHub Actions | Daily Workflow | Coverage Config |",
-            divider="|------------|------------|-------------|---------------|------------------|----------------|-----------------|",
-            row_renderer=render_automation_row,
+            org_name=snapshot.org_name,
+            header=header,
+            divider=divider,
+            row_renderer=render_row,
         )
     )
     return lines
@@ -206,32 +267,6 @@ def render_release_and_commits(
         return "-"
     return f"{latest_release} + {commits}"
 
-
-def render_versions_row(
-    entry: RepoEntry,
-    *,
-    org_name: str,
-    max_bazel_version: tuple[int, ...] | None,
-    latest_docs_as_code_release: str | None,
-) -> str:
-    url = f"https://github.com/{org_name}/{entry.name}"
-    return (
-        f"| [{entry.name}]({url}) | {render_bazel_version_status(entry.content.bazel_version, max_bazel_version)} | "
-        f"{render_docs_as_code_version_status(entry.content.docs_as_code_version, latest_docs_as_code_release)} | "
-        f"{render_bool(entry.content.referenced_by_reference_integration)} |"
-    )
-
-
-def render_automation_row(entry: RepoEntry, *, org_name: str) -> str:
-    url = f"https://github.com/{org_name}/{entry.name}"
-    return (
-        f"| [{entry.name}]({url}) | {render_presence(entry.content.has_gitlint_config, icon='🔍')} | "
-        f"{render_presence(entry.content.has_pyproject_toml, icon='🐍')} | "
-        f"{render_presence(entry.content.has_pre_commit_config, icon='🪝')} | "
-        f"{render_presence(entry.content.has_ci, icon='⚙')} | "
-        f"{render_bool(entry.content.uses_cicd_daily_workflow)} | "
-        f"{render_bool(entry.content.has_coverage_config)} |"
-    )
 
 
 def render_bool(value: bool) -> str:
@@ -337,14 +372,17 @@ def get_max_bazel_version(repos: list[RepoEntry]) -> tuple[int, ...] | None:
     return max(keys) if keys else None
 
 
-def get_latest_docs_as_code_release(repos: list[RepoEntry]) -> str | None:
+def get_latest_tracked_dep_version(repos: list[RepoEntry], dep: TrackedDep) -> str | None:
+    repo_short_name = dep.repo.rsplit("/", 1)[-1]
     for repo in repos:
-        if repo.name.casefold() != "docs-as-code":
-            continue
-        if repo.volatile.latest_release_version is None:
-            return None
-        return repo.volatile.latest_release_version.removeprefix("v").strip() or None
+        if repo.name == repo_short_name:
+            v = repo.volatile.latest_release_version
+            return v.removeprefix("v").strip() if v else None
     return None
+
+
+def tracked_dep_label(dep: TrackedDep) -> str:
+    return dep.repo.rsplit("/", 1)[-1].replace("-", " ").replace("_", " ").title()
 
 
 def render_bazel_version_status(
@@ -372,18 +410,18 @@ def major_minor(version: str) -> tuple[int, int] | None:
     return (parsed[0], parsed[1])
 
 
-def render_docs_as_code_version_status(
-    docs_as_code_version: str | None,
-    latest_docs_as_code_release: str | None,
+def render_dep_version_status(
+    dep_version: str | None,
+    latest_version: str | None,
 ) -> str:
-    if docs_as_code_version is None or not docs_as_code_version.strip():
+    if dep_version is None or not dep_version.strip():
         return "⚪ -"
 
-    cleaned = docs_as_code_version.strip()
-    if latest_docs_as_code_release is None:
+    cleaned = dep_version.strip()
+    if latest_version is None:
         return f"⚪ {escape_markdown_table_cell(cleaned)}"
 
-    latest_cleaned = latest_docs_as_code_release.strip()
+    latest_cleaned = latest_version.strip()
     if cleaned == latest_cleaned:
         return f"🟢 {escape_markdown_table_cell(cleaned)}"
 

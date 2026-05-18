@@ -13,7 +13,6 @@ from tqdm import tqdm
 from generate_repo_overview.console import print_status
 from generate_repo_overview.constants import (
     DEFAULT_CACHE,
-    DEFAULT_ORG,
     DEFAULT_TOKEN_ENV,
 )
 from generate_repo_overview.models import (
@@ -22,6 +21,7 @@ from generate_repo_overview.models import (
     RepoEntry,
     RepoSnapshot,
 )
+from generate_repo_overview.org_config import OrgConfig
 
 from . import reference_integration, registry_metadata, repo_entry, traceability
 from .registry_metadata import RegistrySignalsPayload
@@ -96,7 +96,7 @@ def get_gh_auth_token() -> str | None:
 
 def ensure_snapshot(
     *,
-    org_name: str = DEFAULT_ORG,
+    config: OrgConfig,
     cache_path: Path = DEFAULT_CACHE,
     token_env: str = DEFAULT_TOKEN_ENV,
     refresh: bool = False,
@@ -112,7 +112,7 @@ def ensure_snapshot(
             return cached_snapshot
 
     return collect_snapshot(
-        org_name=org_name,
+        config=config,
         token_env=token_env,
         cache_path=cache_path,
         status_prefix=status_prefix,
@@ -121,18 +121,26 @@ def ensure_snapshot(
 
 def collect_snapshot(
     *,
-    org_name: str = DEFAULT_ORG,
+    config: OrgConfig,
     token_env: str = DEFAULT_TOKEN_ENV,
     cache_path: Path | None = DEFAULT_CACHE,
     reuse_unchanged_repositories: bool = False,
     status_prefix: str = "repo-overview",
 ) -> RepoSnapshot:
+    """Collect a fresh snapshot from GitHub, optionally reusing cached data.
+
+    Loads the existing snapshot from *cache_path* for incremental reuse.
+    Invalidates the content cache when workflow signal definitions in
+    *config* differ from the cached snapshot.
+    """
     try:
         from github import Auth, Github
     except ModuleNotFoundError as exc:
         raise SystemExit(
             "Missing PyGithub. Install project dependencies before running the generator."
         ) from exc
+
+    org_name = config.org_name
 
     token = resolve_github_token(token_env)
     if not token:
@@ -152,6 +160,17 @@ def collect_snapshot(
     )
     try:
         organization = github.get_organization(org_name)
+
+        registry_repository = None
+        if config.registry_repo:
+            try:
+                registry_repository = github.get_repo(config.registry_repo)
+            except Exception as exc:
+                print_status(
+                    f"Could not resolve registry repo {config.registry_repo}: {exc}",
+                    prefix=status_prefix,
+                )
+
         print_status("Collecting repository overview", prefix=status_prefix)
         repos = fetch_repositories(
             organization,
@@ -159,11 +178,14 @@ def collect_snapshot(
             reuse_unchanged_repositories=reuse_unchanged_repositories,
             github_token=token,
             status_prefix=status_prefix,
+            config=config,
+            registry_repository=registry_repository,
         )
 
         trace_by_repo = traceability.fetch_all_traceability_metrics(
             org_name,
             repos,
+            tracked_deps=config.tracked_deps,
             status_prefix=status_prefix,
         )
         if trace_by_repo:
@@ -179,6 +201,10 @@ def collect_snapshot(
             org_name=org_name,
             generated_at=datetime.now(UTC).isoformat(),
             repos=tuple(repos),
+            tracked_deps=config.tracked_deps,
+            workflow_signal_labels=tuple(
+                signal.label for signal in config.workflow_signals
+            ),
         )
         if cache_path is not None:
             write_snapshot(snapshot, cache_path)
@@ -236,9 +262,21 @@ def fetch_repositories(
     reuse_unchanged_repositories: bool = False,
     github_token: str | None = None,
     status_prefix: str = "repo-overview",
+    config: OrgConfig | None = None,
+    registry_repository: object | None = None,
 ) -> list[RepoEntry]:
+    """Fetch and collect all repository entries for an organization.
+
+    Resolves registry metadata, reference integration dependencies and
+    workflow signals, then dispatches parallel per-repo collection.
+    Reuses cached content signals when the default-branch SHA is unchanged
+    and workflow signal definitions have not changed since the cached snapshot.
+    """
+    if config is None:
+        config = OrgConfig(org_name=organization.login)
+
     print_status("Loading active repositories", prefix=status_prefix)
-    active_repositories = fetch_active_repositories(organization)
+    active_repositories = fetch_active_repositories(organization, config=config)
     print_status(
         f"Found {len(active_repositories)} active repositories",
         prefix=status_prefix,
@@ -257,51 +295,64 @@ def fetch_repositories(
         f"{repositories_with_custom_properties} repositories",
         prefix=status_prefix,
     )
-    print_status("Loading maintainers in bazel_registry", prefix=status_prefix)
-    bazel_registry_data = active_repositories.get("bazel_registry")
-    bazel_registry_metadata_by_repo = (
-        registry_metadata.fetch_bazel_registry_metadata_by_repo(
-            bazel_registry_repository=(
-                bazel_registry_data.repository
-                if bazel_registry_data is not None
-                else None
-            ),
-            active_repository_names=set(active_repositories),
-            github_token=github_token,
-        )
-    )
-    print_status(
-        "Loaded bazel_registry metadata for "
-        f"{len(bazel_registry_metadata_by_repo)} active repositories",
-        prefix=status_prefix,
-    )
-    print_status(
-        "Loading reference_integration Bazel dependencies",
-        prefix=status_prefix,
-    )
-    reference_integration_data = active_repositories.get("reference_integration")
-    reference_integration_repository_names = (
-        reference_integration.fetch_reference_integration_repository_names(
-            reference_integration_repository=(
-                reference_integration_data.repository
-                if reference_integration_data is not None
-                else None
-            ),
-            active_repository_names=set(active_repositories),
-            github_token=github_token,
-        )
-    )
-    print_status(
-        "Loaded reference_integration Bazel dependencies for "
-        f"{len(reference_integration_repository_names)} active repositories",
-        prefix=status_prefix,
-    )
 
-    cached_by_name = (
-        {repo.name: repo for repo in existing_snapshot.repos}
-        if existing_snapshot is not None
-        else {}
-    )
+    bazel_registry_metadata_by_repo: dict[str, registry_metadata.RegistrySignalsPayload] = {}
+    if config.registry_repo:
+        print_status(
+            f"Loading maintainers in {config.registry_repo}",
+            prefix=status_prefix,
+        )
+        bazel_registry_metadata_by_repo = (
+            registry_metadata.fetch_bazel_registry_metadata_by_repo(
+                bazel_registry_repository=registry_repository,
+                active_repository_names=set(active_repositories),
+                github_token=github_token,
+            )
+        )
+        print_status(
+            f"Loaded {config.registry_repo} metadata for "
+            f"{len(bazel_registry_metadata_by_repo)} active repositories",
+            prefix=status_prefix,
+        )
+
+    reference_integration_repository_names: set[str] = set()
+    if config.reference_integration_repo:
+        print_status(
+            f"Loading {config.reference_integration_repo} Bazel dependencies",
+            prefix=status_prefix,
+        )
+        ref_int_short_name = config.reference_integration_repo.rsplit("/", 1)[-1]
+        reference_integration_data = active_repositories.get(ref_int_short_name)
+        reference_integration_repository_names = (
+            reference_integration.fetch_reference_integration_repository_names(
+                reference_integration_repository=(
+                    reference_integration_data.repository
+                    if reference_integration_data is not None
+                    else None
+                ),
+                active_repository_names=set(active_repositories),
+                github_token=github_token,
+                org_name=config.org_name,
+            )
+        )
+        print_status(
+            f"Loaded {config.reference_integration_repo} Bazel dependencies for "
+            f"{len(reference_integration_repository_names)} active repositories",
+            prefix=status_prefix,
+        )
+
+    cached_by_name: dict[str, RepoEntry] = {}
+    if existing_snapshot is not None:
+        current_signal_labels = tuple(
+            s.label for s in config.workflow_signals
+        )
+        if current_signal_labels == existing_snapshot.workflow_signal_labels:
+            cached_by_name = {repo.name: repo for repo in existing_snapshot.repos}
+        else:
+            print_status(
+                "Workflow signal definitions changed — ignoring content cache",
+                prefix=status_prefix,
+            )
     sorted_repositories = sorted(
         active_repositories.items(),
         key=lambda item: item[0].casefold(),
@@ -347,6 +398,7 @@ def fetch_repositories(
                     repository_name in reference_integration_repository_names
                 ),
                 reuse_cached_entry_when_unchanged=reuse_unchanged_repositories,
+                workflow_signals=config.workflow_signals,
             )
             futures[future] = (index, repository_name)
 
@@ -373,10 +425,13 @@ def resolve_max_collection_workers() -> int:
 
 def fetch_active_repositories(
     organization: OrganizationLike,
+    *,
+    config: OrgConfig | None = None,
 ) -> dict[str, ActiveRepositoryData]:
     return fetch_active_repositories_via_rest(
         requester=organization.requester,
         org_login=organization.login,
+        config=config,
     )
 
 
@@ -384,6 +439,7 @@ def fetch_active_repositories_via_rest(
     *,
     requester: Any,
     org_login: str,
+    config: OrgConfig | None = None,
 ) -> dict[str, ActiveRepositoryData]:
     from github.Repository import Repository
 
@@ -404,6 +460,8 @@ def fetch_active_repositories_via_rest(
         if repository_name is None or cast(
             "bool", getattr(repository, "archived", False)
         ):
+            continue
+        if config is not None and not config.repo_matches_filter(repository_name):
             continue
         active_repositories[repository_name] = ActiveRepositoryData(
             repository=repository,

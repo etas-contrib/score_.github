@@ -14,15 +14,16 @@ from ._html_common import (
     version_badge,
 )
 from .metrics_report import (
-    get_latest_docs_as_code_release,
+    get_latest_tracked_dep_version,
     get_max_bazel_version,
     group_repos_by_category,
     has_latest_release,
     parse_version_key,
+    tracked_dep_label,
 )
 
 if TYPE_CHECKING:
-    from .models import RepoEntry, RepoSnapshot
+    from .models import RepoEntry, RepoSnapshot, TrackedDep
 
 _INDEX_JS = (Path(__file__).parent / "templates" / "index.js").read_text(
     encoding="utf-8"
@@ -45,9 +46,9 @@ def render_index_page(snapshot: RepoSnapshot) -> str:
         + _render_filters_placeholder()
         + '<div id="sections">\n'
         + _render_overview_sections(categories, snapshot.org_name)
-        + _render_versions_sections(categories, repos, snapshot.org_name)
-        + _render_automation_sections(categories, snapshot.org_name)
-        + _render_traceability_section(repos, snapshot.org_name)
+        + _render_versions_sections(categories, snapshot)
+        + _render_automation_sections(categories, snapshot)
+        + _render_traceability_section(repos, snapshot)
         + "</div>\n"
         + _render_footer(snapshot)
         + _render_script(categories)
@@ -246,12 +247,16 @@ def _render_release(version: str | None, commits_since: int | None) -> str:
     )
 
 
-_DAC_DEP_NAME = "score_docs_as_code"
-_DAC_REPO_NAME = "docs-as-code"
+def _is_tracked_dep_repo(
+    entry: RepoEntry, tracked_deps: tuple[TrackedDep, ...]
+) -> bool:
+    from .models import lookup_bazel_dep_version
 
-
-def _is_docs_as_code_repo(entry: RepoEntry) -> bool:
-    return bool(entry.content.docs_as_code_version) or entry.name == _DAC_REPO_NAME
+    return any(
+        lookup_bazel_dep_version(entry.content.bazel_deps, dep.module_name) is not None
+        or entry.name == dep.repo.rsplit("/", 1)[-1]
+        for dep in tracked_deps
+    )
 
 
 def _build_version_tooltip(
@@ -375,15 +380,26 @@ def _render_dep_changes(
 
 def _render_versions_sections(
     categories: list[tuple[str, list[RepoEntry]]],
-    repos: list[RepoEntry],
-    org_name: str,
+    snapshot: RepoSnapshot,
 ) -> str:
+    repos = sorted(snapshot.repos, key=lambda r: r.name.casefold())
     max_bazel = get_max_bazel_version(repos)
-    latest_dac = get_latest_docs_as_code_release(repos)
+    tracked_deps = snapshot.tracked_deps
+    latest_dep_versions = {
+        dep.module_name: get_latest_tracked_dep_version(repos, dep)
+        for dep in tracked_deps
+    }
+    org_name = snapshot.org_name
     parts: list[str] = []
     for category, cat_repos in categories:
         rows = "\n".join(
-            _versions_row(r, org_name, max_bazel, latest_dac) for r in cat_repos
+            _versions_row(r, org_name, max_bazel, tracked_deps, latest_dep_versions)
+            for r in cat_repos
+        )
+        dep_headers = "".join(
+            f'      <th data-sort="dep-{i}" title="Version of the {e(tracked_dep_label(dep))} dependency.">'
+            f'{e(tracked_dep_label(dep))} Version <span class="sort-arrow"></span></th>\n'
+            for i, dep in enumerate(tracked_deps)
         )
         parts.append(
             f'<div class="section hidden" data-tab="versions" data-category="{e(category)}">\n'
@@ -395,10 +411,10 @@ def _render_versions_sections(
             f"    <thead><tr>\n"
             f'      <th data-sort="name">Repository <span class="sort-arrow"></span></th>\n'
             f'      <th data-sort="bazel" title="The version of Bazel (the build tool) in use. Green = on the latest known version, red = a newer version is available.">{BAZEL_ICON} Bazel Version <span class="sort-arrow"></span></th>\n'
-            f'      <th data-sort="dac" title="The version of the Docs-As-Code tooling in use. Green = up to date, yellow = a patch update is available, red = a major or minor update is needed.">Docs-As-Code Version <span class="sort-arrow"></span></th>\n'
+            f"{dep_headers}"
             f'      <th data-sort="refint" class="text-center" title="Whether this repository is included in the shared reference integration test suite.">Reference Integration <span class="sort-arrow"></span></th>\n'
             f'      <th data-sort="release" title="The most recent published release. Green = no unreleased commits, yellow = up to 20 commits not yet released, red = more than 20 commits not yet released.">Latest Release <span class="sort-arrow"></span></th>\n'
-            f'      <th data-sort="depchanges" title="Number of dependency version changes on the main branch since the last release. Bazel and Docs-As-Code versions are shown in their own columns.">Other Dep Changes <span class="sort-arrow"></span></th>\n'
+            f'      <th data-sort="depchanges" title="Number of dependency version changes on the main branch since the last release. Tracked dependency versions are shown in their own columns.">Other Dep Changes <span class="sort-arrow"></span></th>\n'
             f"    </tr></thead>\n"
             f"    <tbody>\n{rows}\n    </tbody>\n"
             f"  </table>\n"
@@ -411,12 +427,15 @@ def _versions_row(
     entry: RepoEntry,
     org_name: str,
     max_bazel: tuple[int, ...] | None,
-    latest_dac: str | None,
+    tracked_deps: tuple[TrackedDep, ...],
+    latest_dep_versions: dict[str, str | None],
 ) -> str:
+    from .models import lookup_bazel_dep_version
+
     name_cell = repo_name_cell(entry, org_name)
 
     bazel_cell = version_badge(
-        entry.content.bazel_version, max_bazel, latest_dac=None, is_bazel=True
+        entry.content.bazel_version, max_bazel, latest_dep_version=None, is_bazel=True
     )
     release_bazel = entry.volatile.release_bazel_version
     if release_bazel and release_bazel != entry.content.bazel_version:
@@ -425,37 +444,38 @@ def _versions_row(
         )
 
     release_deps = dict(entry.volatile.release_bazel_deps)
-    release_dac = release_deps.get(_DAC_DEP_NAME)
-    dac_cell = version_badge(
-        entry.content.docs_as_code_version, None, latest_dac=latest_dac, is_bazel=False
-    )
-    if release_dac and release_dac != entry.content.docs_as_code_version:
-        dac_cell = f'<span class="mono text-muted">{e(release_dac)}</span> → {dac_cell}'
+    dedicated_dep_names = frozenset(dep.module_name for dep in tracked_deps)
 
-    # Deps rendered in their own column — excluded from "Other Dep Changes"
-    dedicated_deps = frozenset({_DAC_DEP_NAME})
+    dep_cells: list[str] = []
+    for dep in tracked_deps:
+        dep_label = tracked_dep_label(dep)
+        head_ver = lookup_bazel_dep_version(entry.content.bazel_deps, dep.module_name)
+        release_ver = release_deps.get(dep.module_name)
+        latest_ver = latest_dep_versions.get(dep.module_name)
+        cell = version_badge(head_ver, None, latest_dep_version=latest_ver, is_bazel=False)
+        if release_ver and release_ver != head_ver:
+            cell = f'<span class="mono text-muted">{e(release_ver)}</span> → {cell}'
+        tip = _build_version_tooltip(
+            dependency_version_as_used_on_main_branch=head_ver,
+            latest_available_dependency_version=latest_ver,
+            dependency_version_as_used_in_last_release=release_ver,
+            component_name=dep_label,
+            last_release_tag=entry.volatile.latest_release_version,
+        )
+        dep_cells.append(f'      <td data-tooltip="{e(tip)}">{cell}</td>\n')
+
     refint = (
         '<span class="badge green">yes</span>'
         if entry.content.referenced_by_reference_integration
         else '<span class="text-muted">no</span>'
     )
 
-    # Format latest Bazel version as string for generic comparison
     max_bazel_str = ".".join(str(x) for x in max_bazel) if max_bazel else None
     bazel_tip = _build_version_tooltip(
         dependency_version_as_used_on_main_branch=entry.content.bazel_version,
         latest_available_dependency_version=max_bazel_str,
         dependency_version_as_used_in_last_release=release_bazel,
         component_name="Bazel",
-        last_release_tag=entry.volatile.latest_release_version,
-    )
-
-    # Generate Docs-As-Code version comparison tooltip
-    dac_tip = _build_version_tooltip(
-        dependency_version_as_used_on_main_branch=entry.content.docs_as_code_version,
-        latest_available_dependency_version=latest_dac,
-        dependency_version_as_used_in_last_release=release_dac,
-        component_name="Docs-As-Code",
         last_release_tag=entry.volatile.latest_release_version,
     )
 
@@ -480,14 +500,14 @@ def _versions_row(
     else:
         release_tip = f"{ver} — {commits} commit{'s' if commits != 1 else ''} on the main branch not yet included in a release."
 
-    dep_changes_cell, dep_changes_tip = _render_dep_changes(entry, dedicated_deps)
+    dep_changes_cell, dep_changes_tip = _render_dep_changes(entry, dedicated_dep_names)
 
     return (
         f"    <tr>\n"
         f"      <td>{name_cell}</td>\n"
         f'      <td data-tooltip="{e(bazel_tip)}">{bazel_cell}</td>\n'
-        f'      <td data-tooltip="{e(dac_tip)}">{dac_cell}</td>\n'
-        f'      <td class="text-center" data-tooltip="{e(refint_tip)}">{refint}</td>\n'
+        + "".join(dep_cells)
+        + f'      <td class="text-center" data-tooltip="{e(refint_tip)}">{refint}</td>\n'
         f'      <td data-tooltip="{e(release_tip)}">{release}</td>\n'
         f'      <td data-tooltip="{e(dep_changes_tip)}">{dep_changes_cell}</td>\n'
         f"    </tr>"
@@ -496,11 +516,20 @@ def _versions_row(
 
 def _render_automation_sections(
     categories: list[tuple[str, list[RepoEntry]]],
-    org_name: str,
+    snapshot: RepoSnapshot,
 ) -> str:
+    signal_labels = snapshot.workflow_signal_labels
+    org_name = snapshot.org_name
     parts: list[str] = []
     for category, cat_repos in categories:
-        rows = "\n".join(_automation_row(r, org_name) for r in cat_repos)
+        rows = "\n".join(
+            _automation_row(r, org_name, signal_labels) for r in cat_repos
+        )
+        signal_headers = "".join(
+            f'      <th data-sort="signal-{i}" class="text-center" title="Whether this repository matches the {e(label)} workflow signal.">'
+            f'{e(label)} <span class="sort-arrow"></span></th>\n'
+            for i, label in enumerate(signal_labels)
+        )
         parts.append(
             f'<div class="section hidden" data-tab="tech-stack" data-category="{e(category)}">\n'
             f'  <div class="section-header">\n'
@@ -516,7 +545,7 @@ def _render_automation_sections(
             f'      <th data-sort="pyproject" class="text-center" title="Whether this repository has a pyproject.toml — the standard configuration file for Python projects.">Pyproject <span class="sort-arrow"></span></th>\n'
             f'      <th data-sort="precommit" class="text-center" title="Whether this repository runs automated checks (formatting, linting, etc.) before each commit is accepted.">Pre-commit <span class="sort-arrow"></span></th>\n'
             f'      <th data-sort="ci" class="text-center" title="Whether this repository has automated CI/CD pipelines that run on every push or pull request.">GitHub Actions <span class="sort-arrow"></span></th>\n'
-            f'      <th data-sort="daily" class="text-center" title="Whether this repository has a scheduled daily job that runs automated tests and checks.">Daily Workflow <span class="sort-arrow"></span></th>\n'
+            f"{signal_headers}"
             f'      <th data-sort="coverage" class="text-center" title="Whether this repository measures test coverage — tracking how much of the code is exercised by automated tests.">Coverage <span class="sort-arrow"></span></th>\n'
             f"    </tr></thead>\n"
             f"    <tbody>\n{rows}\n    </tbody>\n"
@@ -526,7 +555,9 @@ def _render_automation_sections(
     return "".join(parts)
 
 
-def _automation_row(entry: RepoEntry, org_name: str) -> str:
+def _automation_row(
+    entry: RepoEntry, org_name: str, signal_labels: tuple[str, ...]
+) -> str:
     name_cell = repo_name_cell(entry, org_name, bazel_icon=False)
     c = entry.content
 
@@ -556,13 +587,20 @@ def _automation_row(entry: RepoEntry, org_name: str) -> str:
         "ci": "This repository has automated CI/CD pipelines that run on every push or pull request."
         if c.has_ci
         else "This repository has no automated CI/CD pipelines.",
-        "daily": "This repository has a scheduled daily job that runs automated tests and checks."
-        if c.uses_cicd_daily_workflow
-        else "This repository has no scheduled daily automated checks.",
         "coverage": "This repository measures test coverage — tracking how much of the code is exercised by automated tests."
         if c.has_coverage_config
         else "This repository does not measure test coverage.",
     }
+
+    signal_cells = ""
+    for label in signal_labels:
+        matched = label in c.matched_workflow_signals
+        tip = (
+            f"This repository matches the {label} workflow signal."
+            if matched
+            else f"This repository does not match the {label} workflow signal."
+        )
+        signal_cells += f'      <td class="text-center" data-tooltip="{e(tip)}">{_yesno(matched)}</td>\n'
 
     langs = entry.content.top_languages
     lang_cell = (
@@ -581,7 +619,7 @@ def _automation_row(entry: RepoEntry, org_name: str) -> str:
         f'      <td class="text-center" data-tooltip="{e(tips["pyproject"])}">{_presence(c.has_pyproject_toml, "\U0001f40d")}</td>\n'
         f'      <td class="text-center" data-tooltip="{e(tips["precommit"])}">{_presence(c.has_pre_commit_config, "\U0001fa9d")}</td>\n'
         f'      <td class="text-center" data-tooltip="{e(tips["ci"])}">{_presence(c.has_ci, "⚙️")}</td>\n'
-        f'      <td class="text-center" data-tooltip="{e(tips["daily"])}">{_yesno(c.uses_cicd_daily_workflow)}</td>\n'
+        f"{signal_cells}"
         f'      <td class="text-center" data-tooltip="{e(tips["coverage"])}">{_yesno(c.has_coverage_config)}</td>\n'
         f"    </tr>"
     )
@@ -603,10 +641,11 @@ def _format_type_name(key: str) -> str:
 
 def _render_traceability_section(
     repos: list[RepoEntry],
-    org_name: str,
+    snapshot: RepoSnapshot,
 ) -> str:
-    dac_repos = [r for r in repos if _is_docs_as_code_repo(r)]
-    if not dac_repos:
+    org_name = snapshot.org_name
+    dep_repos = [r for r in repos if _is_tracked_dep_repo(r, snapshot.tracked_deps)]
+    if not dep_repos:
         return ""
 
     total_reqs = 0
@@ -616,7 +655,7 @@ def _render_traceability_section(
     loaded_count = 0
 
     row_parts: list[str] = []
-    for r in dac_repos:
+    for r in dep_repos:
         name_cell = repo_name_cell(r, org_name, bazel_icon=False)
         if not r.traceability:
             row_parts.append(
@@ -674,11 +713,11 @@ def _render_traceability_section(
         f'<div class="section hidden" data-tab="traceability">\n'
         f'  <div class="section-header">\n'
         f'    <span class="section-title">Requirement Traceability</span>\n'
-        f'    <span class="section-count">{len(dac_repos)}</span>\n'
+        f'    <span class="section-count">{len(dep_repos)}</span>\n'
         f"  </div>\n"
         f'  <div id="trace-summary">\n'
         f'    <div class="stat-grid">\n'
-        f'      <div class="stat-card"><div class="stat-value">{loaded_count} / {len(dac_repos)}</div><div class="stat-label">Repos Reporting</div></div>\n'
+        f'      <div class="stat-card"><div class="stat-value">{loaded_count} / {len(dep_repos)}</div><div class="stat-label">Repos Reporting</div></div>\n'
         f'      <div class="stat-card"><div class="stat-value">{total_reqs}</div><div class="stat-label">Total Requirements</div></div>\n'
         f'      <div class="stat-card"><div class="stat-value">{code_cov}</div><div class="stat-label">Code Link Coverage</div></div>\n'
         f'      <div class="stat-card"><div class="stat-value">{test_cov}</div><div class="stat-label">Test Link Coverage</div></div>\n'

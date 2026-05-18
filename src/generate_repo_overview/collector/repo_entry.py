@@ -13,6 +13,7 @@ from generate_repo_overview.models import (
     RegistrySignals,
     RepoEntry,
     VolatileMetricsSnapshot,
+    WorkflowSignal,
 )
 
 from .signal_detection import (
@@ -69,15 +70,8 @@ def collect_repository_entry(
     cached_entry: RepoEntry | None,
     referenced_by_reference_integration: bool = False,
     reuse_cached_entry_when_unchanged: bool = False,
+    workflow_signals: tuple[WorkflowSignal, ...] = (),
 ) -> RepoEntry:
-    """Collect one repository entry using explicit fast/slow collection paths.
-
-    Fast path: when cache reuse is enabled and default-branch state is unchanged,
-    reuse cached content indicators and optionally cached volatile metrics.
-
-    Slow path: when cache reuse is impossible (or disabled), inspect repository
-    content and refresh volatile metrics from live API calls.
-    """
     fast_entry = maybe_collect_repository_entry_fast_path(
         repository_name=repository_name,
         repository=repository,
@@ -97,6 +91,7 @@ def collect_repository_entry(
         bazel_registry_metadata=bazel_registry_metadata,
         referenced_by_reference_integration=referenced_by_reference_integration,
         cached_entry=cached_entry,
+        workflow_signals=workflow_signals,
     )
 
 
@@ -179,8 +174,13 @@ def collect_repository_entry_slow_path(
     bazel_registry_metadata: RegistrySignalsPayload | None,
     referenced_by_reference_integration: bool,
     cached_entry: RepoEntry | None,
+    workflow_signals: tuple[WorkflowSignal, ...] = (),
 ) -> RepoEntry:
-    """Collect using slow path logic (deep content inspection when cache can't prove reuse)."""
+    """Collect a repository entry with deep content inspection.
+
+    Reuses cached content signals when the default-branch SHA matches the
+    cached entry.  Always refreshes volatile metrics and registry signals.
+    """
     default_branch = cast("str | None", getattr(repository, "default_branch", None))
     default_branch_sha = get_default_branch_sha(repository, default_branch)
 
@@ -194,6 +194,7 @@ def collect_repository_entry_slow_path(
         content_signals = inspect_repository_content_slow(
             repository,
             ref=default_branch_sha,
+            workflow_signals=workflow_signals,
         )
     else:
         content_signals = cached_content_signals
@@ -304,7 +305,6 @@ def cached_signals_for_repository(
         "is_bazel_repo": cached_entry.content.is_bazel_repo,
         "bazel_version": cached_entry.content.bazel_version,
         "codeowners": cached_entry.content.codeowners,
-        "docs_as_code_version": cached_entry.content.docs_as_code_version,
         "referenced_by_reference_integration": (
             cached_entry.content.referenced_by_reference_integration
         ),
@@ -313,7 +313,7 @@ def cached_signals_for_repository(
         "has_pyproject_toml": cached_entry.content.has_pyproject_toml,
         "has_pre_commit_config": cached_entry.content.has_pre_commit_config,
         "has_ci": cached_entry.content.has_ci,
-        "uses_cicd_daily_workflow": cached_entry.content.uses_cicd_daily_workflow,
+        "matched_workflow_signals": cached_entry.content.matched_workflow_signals,
         "has_coverage_config": cached_entry.content.has_coverage_config,
         "top_languages": cached_entry.content.top_languages,
         "bazel_deps": cached_entry.content.bazel_deps,
@@ -408,7 +408,6 @@ def build_repo_entry(
             is_bazel_repo=content_signals["is_bazel_repo"],
             bazel_version=content_signals["bazel_version"],
             codeowners=content_signals["codeowners"],
-            docs_as_code_version=content_signals["docs_as_code_version"],
             referenced_by_reference_integration=bool(
                 content_signals.get("referenced_by_reference_integration", False)
             ),
@@ -419,7 +418,7 @@ def build_repo_entry(
                 content_signals.get("has_pre_commit_config", False)
             ),
             has_ci=content_signals["has_ci"],
-            uses_cicd_daily_workflow=content_signals["uses_cicd_daily_workflow"],
+            matched_workflow_signals=content_signals["matched_workflow_signals"],
             has_coverage_config=content_signals["has_coverage_config"],
             top_languages=content_signals.get("top_languages", ()),
             bazel_deps=content_signals.get("bazel_deps", ()),

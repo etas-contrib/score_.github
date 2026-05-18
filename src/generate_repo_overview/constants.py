@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-DEFAULT_ORG = "eclipse-score"
 DEFAULT_OUTPUT = Path("profile/README.md")
 DEFAULT_METRICS_HTML_OUTPUT = Path("_site")
 DEFAULT_CACHE = Path("profile/cache/repo_overview.json")

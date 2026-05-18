@@ -7,7 +7,6 @@ from importlib.resources import files
 from typing import TYPE_CHECKING, cast
 
 from ._text_utils import escape_markdown_table_cell
-from .constants import DEFAULT_ORG
 from .models import (
     DEFAULT_SUBCATEGORY,
     CategoryConfig,
@@ -246,7 +245,8 @@ def render_readme(
     repos: list[RepoEntry],
     template: str,
     config: ReadmeConfig | None = None,
-    org_name: str = DEFAULT_ORG,
+    *,
+    org_name: str,
 ) -> str:
     grouped = group_repositories(repos, config=config)
     config_index = ConfigIndex.from_config(config)
@@ -355,7 +355,7 @@ def render_repo_table(entries: list[RepoEntry], org_name: str) -> list[str]:
     return lines
 
 
-def render_repo_row(entry: RepoEntry, org_name: str = DEFAULT_ORG) -> str:
+def render_repo_row(entry: RepoEntry, org_name: str) -> str:
     url = f"https://github.com/{org_name}/{entry.name}"
     safe_description = escape_markdown_table_cell(entry.description)
     return f"| [{entry.name}]({url}) | {safe_description} |"

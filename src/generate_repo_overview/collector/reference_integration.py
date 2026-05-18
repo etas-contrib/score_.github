@@ -32,6 +32,7 @@ def fetch_reference_integration_repository_names(
     reference_integration_repository: object | None,
     active_repository_names: set[str],
     github_token: str | None,
+    org_name: str,
 ) -> set[str]:
     if reference_integration_repository is None:
         return set()
@@ -60,6 +61,7 @@ def fetch_reference_integration_repository_names(
     git_override_repositories = get_git_override_repositories_by_module(
         module_file_contents.values(),
         active_repository_names=active_repository_names,
+        org_name=org_name,
     )
     registry_repositories = get_bazel_registry_repositories_by_module(
         active_repository_names=active_repository_names,
@@ -173,6 +175,7 @@ def get_git_override_repositories_by_module(
     contents: Iterable[str],
     *,
     active_repository_names: set[str],
+    org_name: str,
 ) -> dict[str, str]:
     repositories_by_module: dict[str, str] = {}
     for content in contents:
@@ -180,6 +183,7 @@ def get_git_override_repositories_by_module(
             get_git_override_repositories_from_text(
                 content,
                 active_repository_names=active_repository_names,
+                org_name=org_name,
             )
         )
     return repositories_by_module
@@ -189,6 +193,7 @@ def get_git_override_repositories_from_text(
     text: str | None,
     *,
     active_repository_names: set[str],
+    org_name: str,
 ) -> dict[str, str]:
     if not text:
         return {}
@@ -201,7 +206,8 @@ def get_git_override_repositories_from_text(
         if module_name_match is None or remote_match is None:
             continue
         repository_name = parse_github_remote_repository_name(
-            remote_match.group("value")
+            remote_match.group("value"),
+            org_name=org_name,
         )
         if repository_name is None or repository_name not in active_repository_names:
             continue
@@ -211,7 +217,11 @@ def get_git_override_repositories_from_text(
     return repositories_by_module
 
 
-def parse_github_remote_repository_name(remote: str) -> str | None:
+def parse_github_remote_repository_name(
+    remote: str,
+    *,
+    org_name: str,
+) -> str | None:
     parsed = urlsplit(remote)
     if parsed.netloc != "github.com":
         return None
@@ -221,7 +231,7 @@ def parse_github_remote_repository_name(remote: str) -> str | None:
         return None
 
     owner, repository_name = path_parts
-    if owner != "eclipse-score":
+    if owner != org_name:
         return None
 
     return repository_name.removesuffix(".git") or None

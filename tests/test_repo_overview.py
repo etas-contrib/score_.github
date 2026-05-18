@@ -20,8 +20,11 @@ from generate_repo_overview.models import (
     RegistrySignals,
     RepoEntry,
     RepoSnapshot,
+    TrackedDep,
     VolatileMetricsSnapshot,
+    WorkflowSignal,
 )
+from generate_repo_overview.org_config import OrgConfig
 
 
 def test_snapshot_round_trip_preserves_repository_overview(tmp_path: Path) -> None:
@@ -47,7 +50,7 @@ def test_snapshot_round_trip_preserves_repository_overview(tmp_path: Path) -> No
                     has_pyproject_toml=True,
                     has_pre_commit_config=True,
                     has_ci=True,
-                    uses_cicd_daily_workflow=True,
+                    matched_workflow_signals=("Daily Workflow",),
                     has_coverage_config=False,
                 ),
                 registry=RegistrySignals(
@@ -68,6 +71,10 @@ def test_snapshot_round_trip_preserves_repository_overview(tmp_path: Path) -> No
                 forks=4,
             ),
         ),
+        tracked_deps=(
+            TrackedDep(repo="eclipse-score/docs-as-code", module_name="score_docs_as_code"),
+        ),
+        workflow_signal_labels=("Daily Workflow",),
     )
     snapshot_path = tmp_path / "repo_overview.json"
 
@@ -86,7 +93,10 @@ def test_ensure_snapshot_prefers_existing_cache(tmp_path: Path) -> None:
     snapshot_path = tmp_path / "repo_overview.json"
     snapshot_io.write_snapshot(snapshot, snapshot_path)
 
-    loaded_snapshot = collector.ensure_snapshot(cache_path=snapshot_path)
+    loaded_snapshot = collector.ensure_snapshot(
+        config=OrgConfig(org_name="eclipse-score"),
+        cache_path=snapshot_path,
+    )
 
     assert loaded_snapshot == snapshot
 
@@ -140,7 +150,7 @@ def test_fetch_repositories_reuses_cached_content_signals() -> None:
             return SimpleNamespace(total_commits=7)
 
     fake_repo = FakeRepo()
-    organization = SimpleNamespace()
+    organization = SimpleNamespace(login="eclipse-score")
     cached_snapshot = RepoSnapshot(
         schema_version=SNAPSHOT_SCHEMA_VERSION,
         org_name="eclipse-score",
@@ -159,7 +169,7 @@ def test_fetch_repositories_reuses_cached_content_signals() -> None:
                     codeowners=("@infra-team",),
                     has_lint_config=True,
                     has_ci=True,
-                    uses_cicd_daily_workflow=True,
+                    matched_workflow_signals=("Daily Workflow",),
                     has_coverage_config=False,
                 ),
                 volatile=VolatileMetricsSnapshot(
@@ -171,7 +181,7 @@ def test_fetch_repositories_reuses_cached_content_signals() -> None:
 
     original_fetch_active_repositories = collector.fetch_active_repositories
     try:
-        collector.fetch_active_repositories = lambda organization: {
+        collector.fetch_active_repositories = lambda organization, **_kwargs: {
             "tools": collector.ActiveRepositoryData(
                 repository=fake_repo,
                 custom_properties={},
@@ -202,6 +212,90 @@ def test_fetch_repositories_reuses_cached_content_signals() -> None:
     assert entry.volatile.volatile_metrics_fetched_at is not None
     assert entry.stars == 3
     assert entry.forks == 4
+
+
+def test_fetch_repositories_invalidates_cache_when_signal_labels_change() -> None:
+    """D4.1: When workflow signal labels in config differ from cached snapshot,
+    content cache is ignored and signals are re-evaluated from scratch."""
+    pushed_at = datetime(2026, 4, 13, 10, 0, tzinfo=UTC)
+
+    class FakeRepo:
+        archived = False
+        name = "tools"
+        description = "Tooling"
+        default_branch = "main"
+
+        def __init__(self) -> None:
+            self.pushed_at = pushed_at
+            self.open_issues_count = 0
+            self.stargazers_count = 0
+            self.forks_count = 0
+
+        def get_branch(self, branch_name: str) -> SimpleNamespace:
+            return SimpleNamespace(commit=SimpleNamespace(sha="abc123"))
+
+        def get_git_tree(self, ref: str, recursive: bool = True) -> SimpleNamespace:
+            return SimpleNamespace(tree=[])
+
+        def get_pulls(self, state: str = "open", **_: Any) -> list[SimpleNamespace]:
+            return []
+
+        def get_latest_release(self) -> SimpleNamespace:
+            raise Exception("no releases")
+
+    fake_repo = FakeRepo()
+    organization = SimpleNamespace(login="eclipse-score")
+
+    cached_snapshot = RepoSnapshot(
+        schema_version=SNAPSHOT_SCHEMA_VERSION,
+        org_name="eclipse-score",
+        generated_at="2026-04-13T12:00:00+00:00",
+        workflow_signal_labels=("Daily Workflow",),
+        repos=(
+            RepoEntry(
+                name="tools",
+                description="Tooling",
+                category="Infrastructure",
+                subcategory="Tooling",
+                default_branch="main",
+                default_branch_sha="abc123",
+                content=DeepContentSignals(
+                    is_bazel_repo=True,
+                    matched_workflow_signals=("Daily Workflow",),
+                ),
+            ),
+        ),
+    )
+
+    config = OrgConfig(
+        org_name="eclipse-score",
+        workflow_signals=(
+            WorkflowSignal(label="Nightly Build", reference="org/ref@"),
+        ),
+    )
+
+    original_fetch = collector.fetch_active_repositories
+    try:
+        collector.fetch_active_repositories = lambda organization, **_kwargs: {
+            "tools": collector.ActiveRepositoryData(
+                repository=fake_repo,
+                custom_properties={},
+            )
+        }
+        repos = collector.fetch_repositories(
+            cast("Any", organization),
+            existing_snapshot=cached_snapshot,
+            config=config,
+        )
+    finally:
+        collector.fetch_active_repositories = original_fetch
+
+    assert len(repos) == 1
+    entry = repos[0]
+    # Cache was invalidated: is_bazel_repo should be False (empty tree)
+    # instead of True (from cache)
+    assert entry.content.is_bazel_repo is False
+    assert entry.content.matched_workflow_signals == ()
 
 
 def test_collect_repository_entry_reuses_cached_details_when_unchanged() -> None:
@@ -242,15 +336,15 @@ def test_collect_repository_entry_reuses_cached_details_when_unchanged() -> None
             is_bazel_repo=True,
             bazel_version="8.4.2",
             codeowners=("@infra-team",),
-            docs_as_code_version="1.2.3",
             referenced_by_reference_integration=False,
             has_lint_config=True,
             has_gitlint_config=True,
             has_pyproject_toml=True,
             has_pre_commit_config=True,
             has_ci=True,
-            uses_cicd_daily_workflow=True,
+            matched_workflow_signals=("Daily Workflow",),
             has_coverage_config=True,
+            bazel_deps=(("score_docs_as_code", "1.2.3"),),
         ),
         registry=RegistrySignals(
             maintainers_in_bazel_registry=("Old Maintainer",),
@@ -296,15 +390,15 @@ def test_collect_repository_entry_reuses_cached_details_when_unchanged() -> None
             is_bazel_repo=True,
             bazel_version="8.4.2",
             codeowners=("@infra-team",),
-            docs_as_code_version="1.2.3",
             referenced_by_reference_integration=True,
             has_lint_config=True,
             has_gitlint_config=True,
             has_pyproject_toml=True,
             has_pre_commit_config=True,
             has_ci=True,
-            uses_cicd_daily_workflow=True,
+            matched_workflow_signals=("Daily Workflow",),
             has_coverage_config=True,
+            bazel_deps=(("score_docs_as_code", "1.2.3"),),
         ),
         registry=RegistrySignals(
             maintainers_in_bazel_registry=("New Maintainer",),
@@ -450,7 +544,7 @@ def test_collect_repository_entry_refreshes_stale_volatile_metrics_without_tree_
             codeowners=("@infra-team",),
             has_lint_config=True,
             has_ci=True,
-            uses_cicd_daily_workflow=True,
+            matched_workflow_signals=("Daily Workflow",),
             has_coverage_config=False,
         ),
         volatile=VolatileMetricsSnapshot(
@@ -624,24 +718,15 @@ def test_detect_bazel_version_ignores_module_version_without_dot_bazelversion() 
     )
 
 
-def test_get_bazel_dep_version_extracts_docs_as_code_dependency_version() -> None:
-    assert (
-        signal_detection.get_bazel_dep_version(
-            'bazel_dep(name = "score_docs_as_code", version = "4.0.0")\n',
-            module_name="score_docs_as_code",
-        )
-        == "4.0.0"
-    )
+def test_get_all_bazel_dep_versions_extracts_dependency_versions() -> None:
+    assert signal_detection.get_all_bazel_dep_versions(
+        'bazel_dep(name = "score_docs_as_code", version = "4.0.0")\n'
+        'bazel_dep(name = "score_process", version = "1.2.3")\n',
+    ) == (("score_docs_as_code", "4.0.0"), ("score_process", "1.2.3"))
 
 
-def test_get_bazel_dep_version_ignores_other_dependencies() -> None:
-    assert (
-        signal_detection.get_bazel_dep_version(
-            'bazel_dep(name = "score_process", version = "1.2.3")\n',
-            module_name="score_docs_as_code",
-        )
-        is None
-    )
+def test_get_all_bazel_dep_versions_returns_empty_for_no_deps() -> None:
+    assert signal_detection.get_all_bazel_dep_versions("# no deps\n") == ()
 
 
 def test_reference_integration_reads_recursive_included_module_files(
@@ -694,6 +779,7 @@ git_override(
 )
 """.strip(),
         active_repository_names={"tooling"},
+        org_name="eclipse-score",
     ) == {"score_tooling": "tooling"}
 
 
@@ -797,7 +883,9 @@ def test_merge_bazel_registry_metadata_combines_owners_and_keeps_latest_version(
     }
 
 
-def test_uses_cicd_daily_workflow_detects_shared_daily_workflow_reference() -> None:
+def test_detect_matched_workflow_signals_detects_shared_workflow_reference() -> None:
+    from generate_repo_overview.models import WorkflowSignal
+
     class FakeRepo:
         def get_contents(self, path: str, ref: str) -> SimpleNamespace:
             assert path == ".github/workflows/nightly.yml"
@@ -810,11 +898,42 @@ def test_uses_cicd_daily_workflow_detects_shared_daily_workflow_reference() -> N
                 )
             )
 
-    assert signal_detection.uses_cicd_daily_workflow(
+    assert signal_detection.detect_matched_workflow_signals(
         FakeRepo(),
         tree_paths={".github/workflows/nightly.yml"},
         ref="abc123",
+        workflow_signals=(
+            WorkflowSignal(
+                label="Daily Workflow",
+                reference="eclipse-score/cicd-workflows/.github/workflows/daily.yml@",
+            ),
+        ),
+    ) == ("Daily Workflow",)
+
+
+def test_detect_matched_workflow_signals_multiple_signals_partial_match() -> None:
+    from generate_repo_overview.models import WorkflowSignal
+
+    class FakeRepo:
+        def get_contents(self, path: str, ref: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                decoded_content=(
+                    b"jobs:\n"
+                    b"  daily:\n"
+                    b"    uses: org/workflows/.github/workflows/daily.yml@main\n"
+                )
+            )
+
+    result = signal_detection.detect_matched_workflow_signals(
+        FakeRepo(),
+        tree_paths={".github/workflows/ci.yml"},
+        ref="abc",
+        workflow_signals=(
+            WorkflowSignal(label="Daily Workflow", reference="org/workflows/.github/workflows/daily.yml@"),
+            WorkflowSignal(label="Nightly Build", reference="org/workflows/.github/workflows/nightly.yml@"),
+        ),
     )
+    assert result == ("Daily Workflow",)
 
 
 def test_get_commits_since_release_returns_none_when_compare_is_lazy() -> None:
@@ -878,7 +997,10 @@ def test_collect_snapshot_reports_rest_api_limits_before_and_after(
     monkeypatch.setattr(collector, "resolve_github_token", lambda token_env: "token")
     monkeypatch.setattr(collector, "fetch_repositories", lambda *args, **kwargs: [])
 
-    snapshot = collector.collect_snapshot(cache_path=None)
+    snapshot = collector.collect_snapshot(
+        config=OrgConfig(org_name="eclipse-score"),
+        cache_path=None,
+    )
 
     captured = capsys.readouterr()
 
@@ -899,7 +1021,7 @@ def test_fetch_repositories_reports_per_repository_progress(
 ) -> None:
     tools_repo = SimpleNamespace(archived=False, name="tools")
     alpha_repo = SimpleNamespace(archived=False, name="alpha")
-    organization = SimpleNamespace()
+    organization = SimpleNamespace(login="eclipse-score")
     cached_snapshot = RepoSnapshot(
         schema_version=SNAPSHOT_SCHEMA_VERSION,
         org_name="eclipse-score",
@@ -926,7 +1048,7 @@ def test_fetch_repositories_reports_per_repository_progress(
         )
 
     try:
-        collector.fetch_active_repositories = lambda organization: {
+        collector.fetch_active_repositories = lambda organization, **_kwargs: {
             "tools": collector.ActiveRepositoryData(
                 repository=tools_repo,
                 custom_properties={},
@@ -955,12 +1077,12 @@ def test_fetch_repositories_reports_per_repository_progress(
 def test_fetch_repositories_preserves_sorted_output_with_parallel_collection() -> None:
     alpha_repo = SimpleNamespace(archived=False, name="alpha")
     tools_repo = SimpleNamespace(archived=False, name="tools")
-    organization = SimpleNamespace()
+    organization = SimpleNamespace(login="eclipse-score")
 
     original_collect_repository_entry = repo_entry.collect_repository_entry
     original_fetch_active_repositories = collector.fetch_active_repositories
     try:
-        collector.fetch_active_repositories = lambda organization: {
+        collector.fetch_active_repositories = lambda organization, **_kwargs: {
             "tools": collector.ActiveRepositoryData(
                 repository=tools_repo,
                 custom_properties={},
@@ -1014,6 +1136,7 @@ def test_metrics_report_renders_summary_and_table() -> None:
         schema_version=SNAPSHOT_SCHEMA_VERSION,
         org_name="eclipse-score",
         generated_at="2026-04-13T12:00:00+00:00",
+        workflow_signal_labels=("Daily Workflow",),
         repos=(
             RepoEntry(
                 name="tools",
@@ -1032,7 +1155,7 @@ def test_metrics_report_renders_summary_and_table() -> None:
                     referenced_by_reference_integration=True,
                     has_lint_config=True,
                     has_ci=True,
-                    uses_cicd_daily_workflow=True,
+                    matched_workflow_signals=("Daily Workflow",),
                     has_coverage_config=False,
                 ),
                 registry=RegistrySignals(
@@ -1064,7 +1187,7 @@ def test_metrics_report_renders_summary_and_table() -> None:
     assert "# Cross-Repo Metrics Report" in markdown
     assert "- Repositories: 1" in markdown
     assert "- With GitHub Actions: 1" in markdown
-    assert "- Using daily workflow: 1" in markdown
+    assert "- With workflow signals: 1" in markdown
     assert "## Table Of Contents" in markdown
     assert "- [Repository Overview](#repository-overview)" in markdown
     assert "- [Versions](#versions)" in markdown
@@ -1090,7 +1213,7 @@ def test_metrics_report_renders_summary_and_table() -> None:
     )
     assert (
         "| [tools](https://github.com/eclipse-score/tools) | "
-        "🟢 8.4.2 | ⚪ - | yes |" in markdown
+        "🟢 8.4.2 | yes |" in markdown
     )
     assert (
         "| [tools](https://github.com/eclipse-score/tools) | - | - | - | ⚙ | yes | no |"
@@ -1204,6 +1327,9 @@ def test_metrics_report_renders_versions_table() -> None:
         schema_version=SNAPSHOT_SCHEMA_VERSION,
         org_name="eclipse-score",
         generated_at="2026-04-13T12:00:00+00:00",
+        tracked_deps=(
+            TrackedDep(repo="eclipse-score/docs-as-code", module_name="score_docs_as_code"),
+        ),
         repos=(
             RepoEntry(
                 name="process_description",
@@ -1213,10 +1339,10 @@ def test_metrics_report_renders_versions_table() -> None:
                 content=DeepContentSignals(
                     is_bazel_repo=True,
                     bazel_version="8.4.2",
-                    docs_as_code_version="4.0.0",
+                    bazel_deps=(("score_docs_as_code", "4.0.0"),),
                     referenced_by_reference_integration=True,
                     has_ci=True,
-                    uses_cicd_daily_workflow=True,
+                    matched_workflow_signals=("Daily Workflow",),
                 ),
                 volatile=VolatileMetricsSnapshot(
                     last_push_date="2026-04-12",
@@ -1239,11 +1365,14 @@ def test_metrics_report_renders_versions_table() -> None:
     )
 
 
-def test_versions_table_docs_as_code_color_rules() -> None:
+def test_versions_table_tracked_dep_color_rules() -> None:
     snapshot = RepoSnapshot(
         schema_version=SNAPSHOT_SCHEMA_VERSION,
         org_name="eclipse-score",
         generated_at="2026-04-13T12:00:00+00:00",
+        tracked_deps=(
+            TrackedDep(repo="eclipse-score/docs-as-code", module_name="score_docs_as_code"),
+        ),
         repos=(
             RepoEntry(
                 name="docs-as-code",
@@ -1259,7 +1388,7 @@ def test_versions_table_docs_as_code_color_rules() -> None:
                 category="Infrastructure",
                 subcategory="Tooling",
                 content=DeepContentSignals(
-                    docs_as_code_version="4.1.3",
+                    bazel_deps=(("score_docs_as_code", "4.1.3"),),
                     bazel_version="8.5.0",
                 ),
             ),
@@ -1269,7 +1398,7 @@ def test_versions_table_docs_as_code_color_rules() -> None:
                 category="Infrastructure",
                 subcategory="Tooling",
                 content=DeepContentSignals(
-                    docs_as_code_version="4.1.1",
+                    bazel_deps=(("score_docs_as_code", "4.1.1"),),
                     bazel_version="8.4.0",
                 ),
             ),
@@ -1279,7 +1408,7 @@ def test_versions_table_docs_as_code_color_rules() -> None:
                 category="Infrastructure",
                 subcategory="Tooling",
                 content=DeepContentSignals(
-                    docs_as_code_version="3.9.9",
+                    bazel_deps=(("score_docs_as_code", "3.9.9"),),
                     bazel_version="8.3.0",
                 ),
             ),
@@ -1289,7 +1418,6 @@ def test_versions_table_docs_as_code_color_rules() -> None:
                 category="Infrastructure",
                 subcategory="Tooling",
                 content=DeepContentSignals(
-                    docs_as_code_version=None,
                     bazel_version=None,
                 ),
             ),
@@ -1318,6 +1446,130 @@ def test_versions_table_docs_as_code_color_rules() -> None:
         "| [none](https://github.com/eclipse-score/none) | ⚪ - | ⚪ - | no |"
         in markdown
     )
+
+
+def test_versions_table_multiple_tracked_deps() -> None:
+    snapshot = RepoSnapshot(
+        schema_version=SNAPSHOT_SCHEMA_VERSION,
+        org_name="eclipse-score",
+        generated_at="2026-04-13T12:00:00+00:00",
+        tracked_deps=(
+            TrackedDep(repo="eclipse-score/docs-as-code", module_name="score_docs_as_code"),
+            TrackedDep(repo="eclipse-score/toolchain", module_name="score_toolchain"),
+        ),
+        repos=(
+            RepoEntry(
+                name="docs-as-code",
+                description="Docs",
+                category="Infrastructure",
+                subcategory="Tooling",
+                volatile=VolatileMetricsSnapshot(latest_release_version="v4.1.3"),
+                content=DeepContentSignals(bazel_version="8.6.0"),
+            ),
+            RepoEntry(
+                name="toolchain",
+                description="TC",
+                category="Infrastructure",
+                subcategory="Tooling",
+                volatile=VolatileMetricsSnapshot(latest_release_version="v2.0.0"),
+                content=DeepContentSignals(bazel_version="8.6.0"),
+            ),
+            RepoEntry(
+                name="consumer",
+                description="Consumer",
+                category="Infrastructure",
+                subcategory="Tooling",
+                content=DeepContentSignals(
+                    bazel_version="8.6.0",
+                    bazel_deps=(
+                        ("score_docs_as_code", "4.1.3"),
+                        ("score_toolchain", "1.9.0"),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    markdown = render_metrics_report(snapshot)
+
+    assert "Docs As Code Version" in markdown
+    assert "Toolchain Version" in markdown
+    assert "🟢 4.1.3 | 🔴 1.9.0" in markdown
+
+
+def test_metrics_report_renders_without_tracked_deps_or_signals() -> None:
+    """D4.2: Versions/Automation tables with zero deps and zero signals."""
+    snapshot = RepoSnapshot(
+        schema_version=SNAPSHOT_SCHEMA_VERSION,
+        org_name="eclipse-score",
+        generated_at="2026-04-13T12:00:00+00:00",
+        tracked_deps=(),
+        workflow_signal_labels=(),
+        repos=(
+            RepoEntry(
+                name="basic-repo",
+                description="Basic",
+                category="Infrastructure",
+                subcategory="Tooling",
+                content=DeepContentSignals(bazel_version="8.0.0", has_ci=True),
+            ),
+        ),
+    )
+
+    markdown = render_metrics_report(snapshot)
+
+    assert "## Versions" in markdown
+    assert "## Delivery And Automation" in markdown
+    assert "| Reference Integration |" in markdown
+    assert "| Coverage Config |" in markdown
+    assert "Daily Workflow" not in markdown
+
+
+def test_metrics_report_automation_with_multiple_signals() -> None:
+    """D4.3: Automation table with 2 signal columns."""
+    snapshot = RepoSnapshot(
+        schema_version=SNAPSHOT_SCHEMA_VERSION,
+        org_name="eclipse-score",
+        generated_at="2026-04-13T12:00:00+00:00",
+        workflow_signal_labels=("Daily Workflow", "Nightly Build"),
+        repos=(
+            RepoEntry(
+                name="repo-a",
+                description="A",
+                category="Infrastructure",
+                subcategory="Tooling",
+                content=DeepContentSignals(
+                    has_ci=True,
+                    matched_workflow_signals=("Daily Workflow",),
+                ),
+            ),
+        ),
+    )
+
+    markdown = render_metrics_report(snapshot)
+
+    assert "Daily Workflow" in markdown
+    assert "Nightly Build" in markdown
+    assert "| yes | no |" in markdown
+
+
+def test_snapshot_from_dict_filters_empty_tracked_deps() -> None:
+    """D4.6: TrackedDep with empty repo/module_name is dropped during deserialization."""
+    snapshot = RepoSnapshot(
+        schema_version=SNAPSHOT_SCHEMA_VERSION,
+        org_name="test",
+        generated_at="2026-01-01",
+        repos=(),
+        tracked_deps=(TrackedDep(repo="org/valid", module_name="valid_mod"),),
+    )
+    raw = snapshot.to_dict()
+    raw["tracked_deps"].append({"repo": "", "module_name": "empty_repo"})
+    raw["tracked_deps"].append({"repo": "org/x", "module_name": ""})
+
+    loaded = RepoSnapshot.from_dict(raw)
+
+    assert len(loaded.tracked_deps) == 1
+    assert loaded.tracked_deps[0].repo == "org/valid"
 
 
 def test_load_snapshot_if_present_ignores_mismatched_schema(tmp_path: Path) -> None:

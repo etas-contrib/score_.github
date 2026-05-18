@@ -1,0 +1,40 @@
+# Organization configuration for generate-repo-overview.
+#
+# This file defines which GitHub organization to scan and how to detect
+# repository signals.  The tool requires this file via --org-config.
+#
+# For a different organization, copy this file and adjust the values.
+
+org_name = "eclipse-score"
+
+# Optional fnmatch glob patterns to limit which repositories are included.
+# When empty (or omitted), all non-archived repositories in the org are included.
+# Example: repo_include_patterns = ["my-prefix-*", "another-repo"]
+# repo_include_patterns = []
+
+[signals]
+
+# Repository (org/repo) that serves as the reference integration project.
+# Its MODULE.bazel is parsed to determine which other repositories are
+# referenced as Bazel dependencies.
+# Leave empty if there is no reference integration repository.
+reference_integration_repo = "eclipse-score/reference_integration"
+
+# Full "org/repo" path to the Bazel registry repository.
+# Leave empty if there is no Bazel registry.
+registry_repo = "eclipse-score/bazel_registry"
+
+# Tracked Bazel dependencies.  Each entry maps a source repository (org/repo)
+# to its Bazel module name.  The tool looks up each module_name in every
+# repository's MODULE.bazel to report dependency versions.
+[[signals.tracked_deps]]
+repo = "eclipse-score/docs-as-code"
+module_name = "score_docs_as_code"
+
+# Named workflow signals.  Each entry has a human-readable label shown in the
+# metrics output, and a reference string to search for inside
+# .github/workflows/*.yml files.  A repository is flagged for a signal when
+# any of its workflow files contain the reference string.
+[[signals.workflow_signals]]
+label = "Daily Workflow"
+reference = "eclipse-score/cicd-workflows/.github/workflows/daily.yml@"

@@ -6,17 +6,26 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any, cast
 
 from generate_repo_overview.console import print_status
-from generate_repo_overview.models import TraceabilityTypeMetrics
+from generate_repo_overview.models import (
+    TraceabilityTypeMetrics,
+    TrackedDep,
+    lookup_bazel_dep_version,
+)
 
 if TYPE_CHECKING:
     from generate_repo_overview.models import RepoEntry
 
 _METRICS_TIMEOUT_SECONDS = 10
-_DAC_REPO_NAME = "docs-as-code"
 
 
-def is_docs_as_code_repo(entry: RepoEntry) -> bool:
-    return bool(entry.content.docs_as_code_version) or entry.name == _DAC_REPO_NAME
+def is_tracked_dep_repo(
+    entry: RepoEntry, tracked_deps: tuple[TrackedDep, ...]
+) -> bool:
+    return any(
+        lookup_bazel_dep_version(entry.content.bazel_deps, dep.module_name) is not None
+        or entry.name == dep.repo.rsplit("/", 1)[-1]
+        for dep in tracked_deps
+    )
 
 
 def fetch_traceability_metrics(
@@ -24,7 +33,7 @@ def fetch_traceability_metrics(
     repo_name: str,
 ) -> tuple[TraceabilityTypeMetrics, ...]:
     base = f"https://{org_name}.github.io/{repo_name}"
-    for path in ("main/metrics.json", "pr-484/metrics.json"):
+    for path in ("main/metrics.json",):
         try:
             with urllib.request.urlopen(
                 f"{base}/{path}", timeout=_METRICS_TIMEOUT_SECONDS
@@ -75,22 +84,23 @@ def fetch_all_traceability_metrics(
     org_name: str,
     repos: list[RepoEntry],
     *,
+    tracked_deps: tuple[TrackedDep, ...] = (),
     status_prefix: str = "repo-overview",
 ) -> dict[str, tuple[TraceabilityTypeMetrics, ...]]:
-    dac_repos = [r for r in repos if is_docs_as_code_repo(r)]
-    if not dac_repos:
+    eligible_repos = [r for r in repos if is_tracked_dep_repo(r, tracked_deps)]
+    if not eligible_repos:
         return {}
 
     print_status(
-        f"Fetching traceability metrics for {len(dac_repos)} docs-as-code repositories",
+        f"Fetching traceability metrics for {len(eligible_repos)} tracked-dep repositories",
         prefix=status_prefix,
     )
 
     results: dict[str, tuple[TraceabilityTypeMetrics, ...]] = {}
-    with ThreadPoolExecutor(max_workers=min(8, len(dac_repos))) as executor:
+    with ThreadPoolExecutor(max_workers=min(8, len(eligible_repos))) as executor:
         futures = {
             executor.submit(fetch_traceability_metrics, org_name, r.name): r.name
-            for r in dac_repos
+            for r in eligible_repos
         }
         for future in as_completed(futures):
             repo_name = futures[future]
@@ -98,7 +108,7 @@ def fetch_all_traceability_metrics(
 
     loaded = sum(1 for v in results.values() if v)
     print_status(
-        f"Loaded traceability metrics for {loaded}/{len(dac_repos)} repositories",
+        f"Loaded traceability metrics for {loaded}/{len(eligible_repos)} repositories",
         prefix=status_prefix,
     )
     return results

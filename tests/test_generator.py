@@ -143,7 +143,7 @@ def test_fetch_repository_descriptions_skips_archived_repositories(
     monkeypatch.setattr(
         collector,
         "fetch_active_repositories",
-        lambda organization: {
+        lambda organization, **_kwargs: {
             "active-repo": collector.ActiveRepositoryData(
                 repository=active_repo,
                 custom_properties={},
@@ -234,6 +234,7 @@ def test_render_readme_uses_simple_markdown_sections() -> None:
             RepoEntry("score", "(no description)", "Modules", "Core"),
         ],
         template=template,
+        org_name="eclipse-score",
     )
 
     assert "# Title" in markdown
@@ -248,7 +249,8 @@ def test_render_readme_uses_simple_markdown_sections() -> None:
 
 def test_render_repo_row_escapes_markdown_table_metacharacters() -> None:
     row = profile_readme.render_repo_row(
-        RepoEntry("tools", "Line 1 | Line 2\nLine 3", "Infrastructure", "General")
+        RepoEntry("tools", "Line 1 | Line 2\nLine 3", "Infrastructure", "General"),
+        org_name="eclipse-score",
     )
 
     assert row == (
@@ -266,6 +268,7 @@ def test_render_readme_omits_general_subheading_for_single_subcategory() -> None
     markdown = render_readme(
         [RepoEntry("infra", "Infra repo", "Infrastructure", "General")],
         template=template,
+        org_name="eclipse-score",
     )
 
     assert "### Infrastructure" in markdown
@@ -294,6 +297,7 @@ def test_render_readme_uses_category_descriptions_from_config() -> None:
         [RepoEntry("infra", "Infra repo", "Infrastructure", "General")],
         template=template,
         config=config,
+        org_name="eclipse-score",
     )
 
     assert "### Infrastructure" in markdown
@@ -324,6 +328,7 @@ def test_render_readme_uses_subcategory_descriptions_from_config() -> None:
         [RepoEntry("infra", "Infra repo", "Infrastructure", "Tooling")],
         template=template,
         config=config,
+        org_name="eclipse-score",
     )
 
     assert "#### Tooling" in markdown
@@ -354,6 +359,7 @@ def test_render_readme_uses_general_subcategory_description_without_heading() ->
         [RepoEntry("infra", "Infra repo", "Infrastructure", "General")],
         template=template,
         config=config,
+        org_name="eclipse-score",
     )
 
     assert "#### General" not in markdown
@@ -381,6 +387,7 @@ def test_render_readme_matches_category_descriptions_case_insensitively() -> Non
         [RepoEntry("infra", "Infra repo", "infrastructure", "General")],
         template=template,
         config=config,
+        org_name="eclipse-score",
     )
 
     assert "### Infrastructure" in markdown
@@ -411,6 +418,7 @@ def test_render_readme_matches_subcategory_descriptions_case_insensitively() -> 
         [RepoEntry("infra", "Infra repo", "infrastructure", "tooling")],
         template=template,
         config=config,
+        org_name="eclipse-score",
     )
 
     assert "### Infrastructure" in markdown
@@ -442,6 +450,7 @@ def test_render_readme_uses_config_casing_for_category_and_subcategory_names() -
         [RepoEntry("score", "Core repo", "modules", "core")],
         template=template,
         config=config,
+        org_name="eclipse-score",
     )
 
     assert "### MODULES" in markdown

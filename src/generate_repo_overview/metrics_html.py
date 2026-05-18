@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from ._html_detail import render_detail_page
 from ._html_index import render_index_page
-from .metrics_report import get_latest_docs_as_code_release, get_max_bazel_version
+from .metrics_report import get_latest_tracked_dep_version, get_max_bazel_version
 
 if TYPE_CHECKING:
     from .models import RepoSnapshot
@@ -14,7 +14,10 @@ if TYPE_CHECKING:
 def render_all_pages(snapshot: RepoSnapshot) -> dict[str, str]:
     repos = sorted(snapshot.repos, key=lambda r: r.name.casefold())
     max_bazel = get_max_bazel_version(list(repos))
-    latest_dac = get_latest_docs_as_code_release(list(repos))
+    latest_dep_versions = {
+        dep.module_name: get_latest_tracked_dep_version(list(repos), dep)
+        for dep in snapshot.tracked_deps
+    }
 
     pages: dict[str, str] = {
         "index.html": render_index_page(snapshot),
@@ -22,6 +25,6 @@ def render_all_pages(snapshot: RepoSnapshot) -> dict[str, str]:
     }
     for entry in repos:
         pages[f"{entry.name}/index.html"] = render_detail_page(
-            entry, snapshot.org_name, snapshot, max_bazel, latest_dac
+            entry, snapshot, max_bazel, latest_dep_versions
         )
     return pages
