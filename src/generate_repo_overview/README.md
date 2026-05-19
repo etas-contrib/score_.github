@@ -64,7 +64,7 @@ The renderers do not talk to GitHub directly. They only consume normalized data.
 
 The main cache file is:
 
-- `profile/cache/repo_overview.json`
+- `.cache/repo_overview.json`
 
 That file stores a serialized `RepoSnapshot` containing:
 
@@ -125,7 +125,7 @@ For each repository, the snapshot currently stores:
 
 There is only one persistent cache file today:
 
-- `profile/cache/repo_overview.json`
+- `.cache/repo_overview.json`
 
 There is no separate per-repository cache directory and no checked-out repository mirror.
 
@@ -151,7 +151,7 @@ Rendered outputs such as `profile/README.md` and `_site/` are products of the sn
 
 ## Cache Semantics By Layer
 
-- Render-only paths read `profile/cache/repo_overview.json` and do not contact GitHub.
+- Render-only paths read `.cache/repo_overview.json` and do not contact GitHub.
 - Collection paths always contact GitHub for current repository metadata.
 - During collection, some content-derived fields can still be reused from the previous snapshot when the repository content fingerprint (`default_branch_sha`) matches.
 

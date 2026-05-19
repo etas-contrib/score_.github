@@ -41,7 +41,7 @@ The snapshot is intentionally renderer-agnostic. It stores neutral values such a
 
 ## Caching Strategy
 
-The default cache file is `profile/cache/repo_overview.json`.
+The default cache file is `.cache/repo_overview.json`.
 
 The cache is used in two ways:
 

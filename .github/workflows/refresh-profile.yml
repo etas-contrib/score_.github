@@ -30,7 +30,7 @@ jobs:
       - name: Restore snapshot cache
         uses: actions/cache@v4
         with:
-          path: profile/cache/repo_overview.json
+          path: .cache/repo_overview.json
           key: snapshot-${{ github.run_id }}
           restore-keys: snapshot-
 
