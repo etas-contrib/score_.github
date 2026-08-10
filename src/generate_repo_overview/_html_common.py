@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from .metrics_report import parse_version_key
 
@@ -13,8 +14,13 @@ _TEMPLATES = Path(__file__).parent / "templates"
 
 CSS = (_TEMPLATES / "styles.css").read_text(encoding="utf-8")
 
+BAZEL_LOGO = (_TEMPLATES / "bazel_logo.svg").read_text(encoding="utf-8")
+
 BAZEL_ICON = (
-    '<img src="https://bazel.build/_pwa/bazel/icons/icon-72x72.png"'
+    '<img src="data:image/svg+xml,'
+    'utf8,'
+    + quote(BAZEL_LOGO)
+    + '"'
     ' alt="Bazel" class="icon-bazel">'
 )
 
@@ -78,7 +84,7 @@ def language_badge(lang: str | None) -> str:
 def repo_name_cell(entry: RepoEntry, org_name: str, *, bazel_icon: bool = True) -> str:
     detail_url = f"{e(entry.name)}/index.html"
     github_url = f"https://github.com/{org_name}/{entry.name}"
-    docs_url_str = docs_url(org_name, entry.name)
+    docs_link_str = docs_url(org_name, entry.name)
     cell = f'<a href="{detail_url}">{e(entry.name)}</a>'
     if bazel_icon and entry.content.is_bazel_repo:
         cell += f" {BAZEL_ICON}"
@@ -87,7 +93,7 @@ def repo_name_cell(entry: RepoEntry, org_name: str, *, bazel_icon: bool = True) 
         f' target="_blank" rel="noopener">{GITHUB_ICON}</a>'
     )
     cell += (
-        f' <a href="{e(docs_url_str)}" class="docs-link" title="Documentation ↗"'
+        f' <a href="{e(docs_link_str)}" class="docs-link" title="Documentation ↗"'
         f' target="_blank" rel="noopener">{DOCS_ICON}</a>'
     )
     if entry.description:
