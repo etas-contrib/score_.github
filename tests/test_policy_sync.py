@@ -332,6 +332,7 @@ def test_policy_sync_matrix_compacts_long_policy_columns() -> None:
     assert "table-layout: fixed;" in page
     assert "overflow-wrap: anywhere;" in page
     assert "white-space: normal;" in page
+    assert "width: min(32rem, calc(100vw - 2rem));" in page
     assert "minimum-bazel-version" in page
 
 
